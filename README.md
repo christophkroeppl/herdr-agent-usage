@@ -19,8 +19,10 @@ remaining headroom.
 The default layout is `gauges`: a meter beside each quota number. Bars fill to
 the printed number, and `cx`, `5h`, `7d`, and `30d` all follow `quota-percent`.
 Labels are three characters so those periods align; a provider-named window too
-long for that column keeps a plain row instead of a truncated bar. Meters size
-to the connected Herdr endpoint's sidebar — indent and scrollbar included.
+long for that column renders as the slot's own label when it is only another
+spelling of that period (`Monthly` → `30d`), keeping its meter, and otherwise
+keeps a plain row instead of a truncated bar. Meters size to the connected
+Herdr endpoint's sidebar — indent and scrollbar included.
 Empty fields collapse; percentages can show remaining or used quota. Cache and
 TTL are off by default (turn them on in settings if you want them). Login-scoped
 vendors (Grok, Codex, Devin, OpenCode, Cursor) keep every tab visible in the

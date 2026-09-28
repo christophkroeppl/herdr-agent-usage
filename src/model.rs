@@ -312,6 +312,34 @@ impl WindowKind {
             Self::Monthly => 30 * 24 * 60 * 60,
         }
     }
+
+    /// Whether a provider's own label is another spelling of this slot's
+    /// period.
+    ///
+    /// Providers name windows in their own vocabulary, and the sidebar's gauge
+    /// column is three characters wide, so an omp `Monthly` cannot be drawn
+    /// where `30d` fits. Recognising the spellings that mean *this* period —
+    /// and only those — is what lets that row render as the slot instead of
+    /// losing its meter. A label that names something else stays untouched:
+    /// omp's `Daily` is not a five-hour window, and a provider-specific pool
+    /// name is not a period at all.
+    pub fn spells_period(self, label: &str) -> bool {
+        let spelled = label.trim().to_ascii_lowercase();
+        match self {
+            Self::FiveHour => matches!(
+                spelled.as_str(),
+                "5h" | "5 hour" | "5 hours" | "5h rolling" | "rolling-5h"
+            ),
+            Self::Weekly => matches!(
+                spelled.as_str(),
+                "7d" | "7 day" | "7 days" | "1w" | "week" | "weekly"
+            ),
+            Self::Monthly => matches!(
+                spelled.as_str(),
+                "30d" | "30 day" | "30 days" | "1mo" | "month" | "monthly"
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

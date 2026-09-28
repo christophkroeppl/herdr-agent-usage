@@ -665,6 +665,29 @@ fn format_window(
     format!("{label} reset {eta}")
 }
 
+/// The label a gauges row prints.
+///
+/// The provider's own label is kept whenever it can be drawn, and the plain
+/// row (nothing abbreviated) is kept when the sidebar is too narrow for a
+/// meter at all — a label nobody can fit is not a reason to drop the words a
+/// user may recognise. In between, a provider that is only spelling this
+/// window's own period in words (`Monthly` for the month pool) renders as the
+/// slot's label, which is the same period: the row keeps its meter and the
+/// numbers stay in the gauge column. A label that says something else is never
+/// renamed.
+fn gauge_label(window: &UsageWindow, shape: SidebarShape) -> String {
+    let label = window.display_label();
+    if gauge_cells(shape, label).is_some() {
+        return label.to_string();
+    }
+    let slot = window.kind.label();
+    if window.kind.spells_period(label) && gauge_cells(shape, slot).is_some() {
+        return slot.to_string();
+    }
+    label.to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct WindowParts {
     label: String,
     percent: String,
@@ -696,13 +719,13 @@ fn compact_window_parts(
     style: PercentStyle,
     shape: SidebarShape,
 ) -> WindowParts {
-    let label = window.display_label();
+    let label = gauge_label(window, shape);
     let percent = style.percent_of(window);
     let eta = window
         .resets_at
         .map(|reset| format_reset_eta(reset, now_unix))
         .unwrap_or_default();
-    match gauge_cells(shape, label) {
+    match gauge_cells(shape, &label) {
         // The number is right-aligned so the ETA column lines up across rows.
         Some(cells) => WindowParts {
             label: format!("{label:<width$}", width = GAUGE_LABEL_WIDTH),
@@ -2664,26 +2687,78 @@ mod tests {
         assert!(values.quota_month.chars().count() <= gauges(18).content_width);
     }
 
-    /// A provider-supplied label is never rewritten, so one too long for the
-    /// column keeps the plain row rather than being abbreviated by guesswork.
+    /// omp's month pool is this slot's own period under another name, and the
+    /// gauge column only holds three characters. The row renders the slot's
+    /// label so it keeps its meter; the provider's word stays in the cache and
+    /// in the dashboard, which has room for it.
     #[test]
-    fn a_provider_supplied_long_label_still_keeps_the_plain_row() {
-        let long = UsageWindow::new(
-            WindowKind::Monthly,
-            17.0,
-            Some(ResetAt::from_unix_seconds(424_800)),
-        )
-        .unwrap()
-        .with_source_window("Monthly", None);
-        let snapshot = ProviderSnapshot::new(Provider::Omp, vec![long], 0);
-        let values = MetadataTokens::from_snapshot_for_session(
+    fn a_provider_label_that_spells_the_slot_period_keeps_its_meter() {
+        for label in ["Monthly", "monthly"] {
+            let window = UsageWindow::new(
+                WindowKind::Monthly,
+                17.0,
+                Some(ResetAt::from_unix_seconds(424_800)),
+            )
+            .unwrap()
+            .with_source_window(label, None);
+            let snapshot = ProviderSnapshot::new(Provider::Omp, vec![window], 0);
+            let values = MetadataTokens::from_snapshot_for_session(
+                &snapshot,
+                0,
+                None,
+                PercentStyle::Remaining,
+                gauges(26),
+            );
+            assert_eq!(
+                values.quota_month,
+                "30d \u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b0}\u{25b1}  83% 4d22h",
+                "{label}"
+            );
+            assert!(
+                dashboard_summary(&snapshot, 0, PercentStyle::Remaining).contains(label),
+                "{label} must survive in the dashboard"
+            );
+        }
+    }
+
+    /// A label that names another period, or any label on a sidebar too narrow
+    /// to meter at all, is left exactly as the provider wrote it.
+    #[test]
+    fn a_provider_label_for_another_period_is_never_renamed() {
+        let daily = UsageWindow::new(WindowKind::FiveHour, 17.0, None)
+            .unwrap()
+            .with_source_window("Daily", None);
+        let snapshot = ProviderSnapshot::new(Provider::Omp, vec![daily], 0);
+        let gauged = MetadataTokens::from_snapshot_for_session(
             &snapshot,
             0,
             None,
             PercentStyle::Remaining,
             gauges(26),
         );
-        assert_eq!(values.quota_month, "Monthly 83% 4d22h");
+        assert_eq!(gauged.quota_5h, "Daily 83%");
+
+        let monthly = UsageWindow::new(WindowKind::Monthly, 17.0, None)
+            .unwrap()
+            .with_source_window("Monthly", None);
+        let snapshot = ProviderSnapshot::new(Provider::Omp, vec![monthly], 0);
+        let narrow = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            gauges(16),
+        );
+        assert_eq!(narrow.quota_month, "Monthly 83%");
+
+        let packed = MetadataTokens::from_snapshot_for_session(
+            &snapshot,
+            0,
+            None,
+            PercentStyle::Remaining,
+            SidebarLayout::Packed.into(),
+        );
+        assert_eq!(packed.quota_month, "Monthly 83%");
     }
 
     // --- Claude status line spending pace ---------------------------------

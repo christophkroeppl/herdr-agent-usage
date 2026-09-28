@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- A window whose provider label is another spelling of its own period renders
+  as the sidebar's slot label in the gauges layout: omp's month pool
+  (`Monthly` / `monthly`) shows as `30d` and keeps its meter, so that row
+  reads like the `5h` and `7d` rows beside it. The provider's word is
+  untouched in the cache and in the dashboard, a label that names something
+  else (`Daily`, a provider-specific pool) is never renamed, and a sidebar too
+  narrow to meter at all still shows the provider's label.
+
 ### Fixed
 
 - An omp or Pi pane Herdr has no readable session for now says so in the
