@@ -145,6 +145,26 @@ impl Harness {
     pub fn billing_for_agent(name: &str) -> Option<Billing> {
         Self::from_agent_name(name).and_then(Self::billing)
     }
+
+    /// The name the sidebar shows when the harness is all that is known.
+    ///
+    /// Pi and omp carry their provider in the transcript, so a pane of theirs
+    /// with no readable session has no provider id to render. The harness is
+    /// still true, and it is what names the row and the remedy.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::Grok => "Grok",
+            Self::Claude => "Claude",
+            Self::Agy => "Agy",
+            Self::OpenCode => "OpenCode",
+            Self::Pi => "Pi",
+            Self::Omp => "OMP",
+            Self::Devin => "Devin",
+            Self::Muse => "Muse",
+            Self::Cursor => "Cursor",
+        }
+    }
 }
 
 /// Opaque local identity for a credential store. Not a token, path, or account id.

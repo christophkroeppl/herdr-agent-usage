@@ -1,7 +1,7 @@
 use crate::cli::{FieldSet, PercentStyle, SidebarField, SidebarLayout, SidebarPacing};
 use crate::model::{
-    format_percent, live_windows, printed_percent, window_in, Provider, ProviderSnapshot, ResetAt,
-    Severity, UsageWindow, WindowKind,
+    format_percent, live_windows, printed_percent, window_in, Harness, Provider, ProviderSnapshot,
+    ResetAt, Severity, UsageWindow, WindowKind,
 };
 
 /// Three-character label, three spaces, `100%`, and a six-character ETA.
@@ -378,7 +378,19 @@ impl MetadataTokens {
     /// belonging to a login the user has since switched away from. Window rows
     /// stay off rather than reading `N/A`, and `quota_error` says why.
     pub fn unavailable(provider: Provider, reason: impl Into<String>) -> Self {
-        let quota_provider = provider.display_name().to_string();
+        Self::unavailable_labelled(provider.display_name(), reason)
+    }
+
+    /// Same as [`Self::unavailable`] for a pane whose provider is not known.
+    ///
+    /// Pi and omp read their provider from the transcript, so one of their
+    /// panes with no readable session can only be named by its harness.
+    pub fn unavailable_for_harness(harness: Harness, reason: impl Into<String>) -> Self {
+        Self::unavailable_labelled(harness.display_name(), reason)
+    }
+
+    fn unavailable_labelled(label: &str, reason: impl Into<String>) -> Self {
+        let quota_provider = label.to_string();
         Self {
             quota_provider_model: quota_provider.clone(),
             quota_provider,

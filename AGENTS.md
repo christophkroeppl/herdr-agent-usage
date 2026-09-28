@@ -65,7 +65,8 @@ It is also the second home of the one repair `configure --apply` can only make
 once: when omp is selected and Herdr says its integration is still missing,
 and omp's own agent directory exists, startup installs it. A machine that
 installed omp after this plugin would otherwise keep detecting omp panes
-without a session forever, and a pane in that state has nothing to publish.
+without a session forever, and a pane in that state has nothing to publish and
+says so (`unattributed_session_reason`) instead of rendering an empty row.
 Plugin enable alone does not run startup; the configure action runs it after
 repair. Server-owned event/refresh paths also record the current Herdr binary
 and socket so an older watcher can adopt the new connection.

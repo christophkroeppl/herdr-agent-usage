@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- An omp or Pi pane Herdr has no readable session for now says so in the
+  sidebar instead of rendering a brand icon with no rows: `no omp session:
+  install Herdr's omp integration, then restart this pane`, or for a session
+  Herdr has named but the agent has not written yet, `omp session file is
+  empty until this pane's first turn`. Both measurements came from the
+  transcript, so an unreadable one leaves the pane with no provider, no
+  account, and nothing to show — the one state where an empty row was the
+  least obvious way for a correct install to look broken.
 - Herdr's omp integration is now repaired from `startup` as well as
   `configure --apply`. A machine that installed this plugin before it installed
   omp skipped the collector once and never ran that path again, so every omp
