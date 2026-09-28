@@ -3941,6 +3941,10 @@ fn pi_different_account_clears_stale_quota_and_cannot_borrow_codex_cache() {
     assert!(calls.contains("--clear-token quota_5h"), "{calls}");
     assert!(calls.contains("--clear-token quota_week"), "{calls}");
     assert!(!codex_log.exists(), "indeterminate route invoked Codex");
+    assert!(
+        !calls.contains("first turn"),
+        "a written transcript is not waiting for a first turn: {calls}"
+    );
 }
 
 #[test]

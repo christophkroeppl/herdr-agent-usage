@@ -15,7 +15,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clears them, because a narrow sidebar truncates the row. Both measurements
   came from the transcript, so an unreadable one leaves the pane with no
   provider, no account, and nothing to show — the one state where an empty row
-  was the least obvious way for a correct install to look broken.
+  was the least obvious way for a correct install to look broken. A pane whose
+  transcript is already written keeps its earlier silence instead: a model
+  switch, a login that cannot be proved to pay for the pane, or a session this
+  build does not parse is not waiting for a first turn, and that row would
+  never clear.
 - Herdr's omp integration is now repaired from `startup` as well as
   `configure --apply`. A machine that installed this plugin before it installed
   omp skipped the collector once and never ran that path again, so every omp
