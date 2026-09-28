@@ -30,7 +30,7 @@ fn assert_watcher_adopts_environment(entrypoint: &str) {
         &current,
         r#"#!/bin/sh
 [ "$HERDR_SOCKET_PATH" = "$TEST_CURRENT_SOCKET" ] || exit 2
-printf '%s\n' "$*" >> "$TEST_LOG"
+printf '%s\n' "$* ${TEST_MARK:-startup} $HERDR_SOCKET_PATH" >> "$TEST_LOG"
 printf '%s\n' '{"result":{"agents":[]}}'
 "#,
     )
@@ -71,28 +71,54 @@ printf '%s\n' '{"result":{"agents":[]}}'
         assert!(Instant::now() < deadline);
         thread::sleep(Duration::from_millis(10));
     }
-    let before = fs::read_to_string(&log).unwrap().lines().count();
-    let mut child = command()
-        .args(["watch", "--provider", "agy"])
-        .env("HERDR_BIN_PATH", &old)
-        .env("HERDR_SOCKET_PATH", dir.path().join("old.sock"))
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break Some(status);
-        }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            break None;
-        }
-        thread::sleep(Duration::from_millis(10));
+    let polled = || {
+        let wanted = format!("handoff {}", socket.to_string_lossy());
+        fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .any(|line| line.ends_with(&wanted))
     };
-    assert!(status.is_some_and(|status| status.success()),
-        "watcher kept polling the old incompatible Herdr client instead of adopting startup's environment");
-    assert!(fs::read_to_string(log).unwrap().lines().count() > before);
+    // A watcher that finds the global lease taken exits at once, by design, and
+    // startup may still be running its own short-lived one. Retry until one of
+    // ours is the watcher that polled, so a lease collision is not read as a
+    // failed handoff. A watcher that keeps the old incompatible client instead
+    // never exits on its own, which the deadline below reports.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut adopted = false;
+    while !adopted {
+        assert!(
+            Instant::now() < deadline,
+            "no watcher adopted the current environment: {}",
+            fs::read_to_string(&log).unwrap()
+        );
+        let mut child = command()
+            .args(["watch", "--provider", "agy"])
+            .env("HERDR_BIN_PATH", &old)
+            .env("HERDR_SOCKET_PATH", dir.path().join("old.sock"))
+            .env("TEST_MARK", "handoff")
+            .spawn()
+            .unwrap();
+        loop {
+            adopted = polled();
+            match child.try_wait().unwrap() {
+                // Polled, then finished: the environment was adopted.
+                Some(_) if adopted => break,
+                // Exited without polling: another watcher holds the lease, so
+                // this run proves nothing and the next attempt decides.
+                Some(status) => {
+                    assert!(status.success(),
+                        "watcher kept polling the old incompatible Herdr client instead of adopting startup's environment");
+                    break;
+                }
+                None if Instant::now() >= deadline => {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("watcher kept polling the old incompatible Herdr client instead of adopting startup's environment");
+                }
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
 }
 
 #[test]
