@@ -88,6 +88,11 @@ pub fn run(providers: &[Provider], force: bool, json: bool) -> Result<()> {
 /// spend a socket call on every turn. A `default` order owns no view, so
 /// nothing is put back.
 pub fn startup(providers: &[Provider]) -> Result<()> {
+    // A machine can gain omp after this plugin was configured: `configure
+    // --apply` skipped Herdr's omp integration once, while omp was not there
+    // yet, and never ran again. Startup is the path that runs after every
+    // server restart, so it is where that one-shot skip is retried.
+    crate::configure::integration::repair_omp_at_startup(&AgentSelection::from_args_or_env(&[]));
     // Handoff need not emit another idle -> working event. An existing
     // watcher adopts the saved environment; otherwise this starts one.
     run(providers, true, false)?;
@@ -754,7 +759,7 @@ fn console_fallback_quota(
     .map(|values| PaneQuotaUpdate::Replace(Box::new(values))))
 }
 
-/// The layout the user chose and the meter size their sidebar affords,
+/// The layout the user chose, and the meter size their sidebar affords,
 /// resolved once per refresh: the layout from the state-dir cache the publish
 /// hooks can see, the width from Herdr's own config.
 fn sidebar_shape(cache: &CacheStore) -> SidebarShape {

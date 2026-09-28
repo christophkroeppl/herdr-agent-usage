@@ -66,16 +66,88 @@ pub fn ensure_omp(agents: &[Harness], full_selection: bool) -> Result<()> {
     if !needs_omp_install(agents, &status) {
         return Ok(());
     }
-    let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let output = Command::new(executable)
-        .args(["integration", "install", "omp"])
-        .output()?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        return omp_install_failed(full_selection, detail.trim());
+    if let Err(detail) = install_omp() {
+        return omp_install_failed(full_selection, &detail);
     }
     println!("Installed Herdr's omp integration. Restart already-running omp panes once.");
     Ok(())
+}
+
+/// Repair Herdr's omp integration on the startup path.
+///
+/// `configure --apply` is a one-shot repair: a machine that installed this
+/// plugin *before* it installed omp skipped the collector once, printed one
+/// line, and from then on every omp pane was detected without a session — no
+/// quota, no model, no explanation. Startup runs again after every Herdr
+/// restart (and every upgrade), which is exactly when an omp that appeared
+/// since the last configure can be picked up.
+///
+/// Nothing is printed when omp is not on the machine. Herdr names the
+/// extension's own path beside the state, and that path always lives inside
+/// the agent's directory, so a missing one is the ordinary "omp is not
+/// installed yet" case rather than a failure worth a log line on every
+/// restart.
+pub fn repair_omp_at_startup(agents: &[Harness]) {
+    // An install that never selected omp must not spawn Herdr here: startup
+    // runs on every server restart, and the selection is what decides whether
+    // omp's integration belongs on this machine at all.
+    if !agents.contains(&Harness::Omp) {
+        return;
+    }
+    let Some(status) = read_status() else {
+        return;
+    };
+    if !needs_omp_install(agents, &status) || !agent_dir_present(&status, "omp") {
+        return;
+    }
+    match install_omp() {
+        Ok(()) => {
+            println!("Installed Herdr's omp integration. Restart already-running omp panes once.")
+        }
+        Err(detail) => println!("Herdr's omp integration is still missing: {detail}"),
+    }
+}
+
+/// The install Herdr's own CLI performs, with its stderr as the detail.
+///
+/// Returned as a string rather than an error so the caller decides whether a
+/// failure is a skip line, a hard error, or startup noise.
+fn install_omp() -> Result<(), String> {
+    let executable = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+    let output = Command::new(executable)
+        .args(["integration", "install", "omp"])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
+/// Whether the agent an integration feeds has a directory on this machine.
+///
+/// Herdr prints the extension's own path in the status line, and it is always
+/// `<agent dir>/…/<file>`, so the grandparent existing is the honest "this
+/// agent is installed" signal — without guessing at paths this plugin does not
+/// own, and without spawning the agent on every restart.
+fn agent_dir_present(status: &str, id: &str) -> bool {
+    integration_target(status, id)
+        .and_then(|path| Some(path.parent()?.parent()?.to_path_buf()))
+        .is_some_and(|directory| directory.is_dir())
+}
+
+/// The path Herdr would install an integration's file to.
+fn integration_target(status: &str, id: &str) -> Option<std::path::PathBuf> {
+    status.lines().find_map(|line| {
+        let rest = line
+            .trim()
+            .strip_prefix(id)?
+            .strip_prefix(':')?
+            .trim_start();
+        let (_, target) = rest.split_once('(')?;
+        let target = target.strip_suffix(')')?.trim();
+        (!target.is_empty()).then(|| std::path::PathBuf::from(target))
+    })
 }
 
 fn omp_install_failed(full_selection: bool, detail: &str) -> Result<()> {
@@ -177,5 +249,35 @@ grok: outdated (v0) (/home/u/.grok/hooks/herdr-agent-state.sh)
             &[Harness::Omp],
             "omp: current (v8) (/home/u/.omp/agent/extensions/herdr-agent-state.ts)"
         ));
+    }
+
+    #[test]
+    fn the_extension_target_is_read_from_the_status_line() {
+        assert_eq!(
+            integration_target(STATUS, "omp").as_deref(),
+            Some(std::path::Path::new(
+                "/home/u/.omp/agent/extensions/herdr-agent-state.ts"
+            ))
+        );
+        assert_eq!(integration_target(STATUS, "kimi"), None);
+        assert_eq!(integration_target("omp: not installed\n", "omp"), None);
+        assert_eq!(integration_target("omp: not installed ()", "omp"), None);
+    }
+
+    /// Herdr would write the extension into the agent's own directory, so that
+    /// directory existing is what separates "omp is not installed yet" — the
+    /// ordinary skip — from a machine where the integration needs repairing.
+    #[test]
+    fn the_agent_directory_decides_whether_startup_repairs_omp() {
+        let directory = tempfile::tempdir().unwrap();
+        let agent = directory.path().join(".omp/agent");
+        let status = format!(
+            "omp: not installed ({}/extensions/herdr-agent-state.ts)\n",
+            agent.display()
+        );
+        assert!(!agent_dir_present(&status, "omp"));
+        std::fs::create_dir_all(&agent).unwrap();
+        assert!(agent_dir_present(&status, "omp"));
+        assert!(!agent_dir_present("omp: current (v8)\n", "omp"));
     }
 }

@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Herdr's omp integration is now repaired from `startup` as well as
+  `configure --apply`. A machine that installed this plugin before it installed
+  omp skipped the collector once and never ran that path again, so every omp
+  pane afterwards was detected without a session — no quota, no model, no
+  explanation. Startup runs after every Herdr restart, installs the integration
+  once omp's own agent directory exists, and stays silent when it does not.
 - OpenCode Go quota now reads the console subscription meters behind the
   OpenCode console login — the same numbers the console page shows. The
   per-key `/zen/go/v1/usage` counters remain the fallback for stores without a
