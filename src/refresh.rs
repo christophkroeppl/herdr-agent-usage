@@ -2118,6 +2118,23 @@ mod tests {
         );
     }
 
+    /// A transcript path whose state cannot be read — a component replaced by a
+    /// file, a permission the plugin does not have — is not evidence that no
+    /// turn has happened. The pane keeps its earlier silence rather than
+    /// promising that a turn will fix what the file system refused to describe.
+    #[test]
+    fn an_unstattable_transcript_path_is_not_a_first_turn() {
+        let directory = tempdir().unwrap();
+        let blocker = directory.path().join("session.jsonl");
+        std::fs::write(&blocker, "{\"type\":\"session\"}\n").unwrap();
+        let mut pane = test_pane("w1:p9", Harness::Omp);
+        pane.session = Some(crate::herdr::AgentSession {
+            kind: Some("path".to_string()),
+            value: blocker.join("child.jsonl").to_string_lossy().into_owned(),
+        });
+        assert_eq!(unattributed_session_reason(&pane), None);
+    }
+
     /// The shape the Pi route reaches when the login cannot be proved to pay
     /// for the pane: the transcript is written, the model is known, and the
     /// pane must go back to clearing stale rows rather than promising that a
