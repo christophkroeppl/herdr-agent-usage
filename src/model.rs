@@ -145,6 +145,26 @@ impl Harness {
     pub fn billing_for_agent(name: &str) -> Option<Billing> {
         Self::from_agent_name(name).and_then(Self::billing)
     }
+
+    /// The name the sidebar shows when the harness is all that is known.
+    ///
+    /// Pi and omp carry their provider in the transcript, so a pane of theirs
+    /// with no readable session has no provider id to render. The harness is
+    /// still true, and it is what names the row and the remedy.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::Grok => "Grok",
+            Self::Claude => "Claude",
+            Self::Agy => "Agy",
+            Self::OpenCode => "OpenCode",
+            Self::Pi => "Pi",
+            Self::Omp => "OMP",
+            Self::Devin => "Devin",
+            Self::Muse => "Muse",
+            Self::Cursor => "Cursor",
+        }
+    }
 }
 
 /// Opaque local identity for a credential store. Not a token, path, or account id.
@@ -290,6 +310,34 @@ impl WindowKind {
             Self::FiveHour => 5 * 60 * 60,
             Self::Weekly => 7 * 24 * 60 * 60,
             Self::Monthly => 30 * 24 * 60 * 60,
+        }
+    }
+
+    /// Whether a provider's own label is another spelling of this slot's
+    /// period.
+    ///
+    /// Providers name windows in their own vocabulary, and the sidebar's gauge
+    /// column is three characters wide, so an omp `Monthly` cannot be drawn
+    /// where `30d` fits. Recognising the spellings that mean *this* period —
+    /// and only those — is what lets that row render as the slot instead of
+    /// losing its meter. A label that names something else stays untouched:
+    /// omp's `Daily` is not a five-hour window, and a provider-specific pool
+    /// name is not a period at all.
+    pub fn spells_period(self, label: &str) -> bool {
+        let spelled = label.trim().to_ascii_lowercase();
+        match self {
+            Self::FiveHour => matches!(
+                spelled.as_str(),
+                "5h" | "5 hour" | "5 hours" | "5h rolling" | "rolling-5h"
+            ),
+            Self::Weekly => matches!(
+                spelled.as_str(),
+                "7d" | "7 day" | "7 days" | "1w" | "week" | "weekly"
+            ),
+            Self::Monthly => matches!(
+                spelled.as_str(),
+                "30d" | "30 day" | "30 days" | "1mo" | "month" | "monthly"
+            ),
         }
     }
 }

@@ -19,8 +19,10 @@ remaining headroom.
 The default layout is `gauges`: a meter beside each quota number. Bars fill to
 the printed number, and `cx`, `5h`, `7d`, and `30d` all follow `quota-percent`.
 Labels are three characters so those periods align; a provider-named window too
-long for that column keeps a plain row instead of a truncated bar. Meters size
-to the connected Herdr endpoint's sidebar — indent and scrollbar included.
+long for that column renders as the slot's own label when it is only another
+spelling of that period (`Monthly` → `30d`), keeping its meter, and otherwise
+keeps a plain row instead of a truncated bar. Meters size to the connected
+Herdr endpoint's sidebar — indent and scrollbar included.
 Empty fields collapse; percentages can show remaining or used quota. Cache and
 TTL are off by default (turn them on in settings if you want them). Login-scoped
 vendors (Grok, Codex, Devin, OpenCode, Cursor) keep every tab visible in the
@@ -246,7 +248,7 @@ turn failures into zero usage.
 | Session data is missing | Run `herdr integration status`; load missing integrations before restarting the affected agent |
 | Claude/Agy quota is missing | Send a turn so the session's StatusLine produces an observation |
 | OpenCode Go quota looks frozen | The console login is the source; without it the per-key endpoint is used, and a key that stopped serving traffic keeps its last reading. Sign in with `/connect` so a console login exists, then refresh |
-| OMP quota is missing | Check `omp usage --json --redact --provider <id>` |
+| OMP quota is missing | A row reading `restart pane: no omp session` means Herdr itself has no session for that pane: run `herdr integration install omp` (or reload the plugin, which repairs it at startup) and restart the pane. A row reading `first turn writes the omp session` clears on its own. Otherwise check `omp usage --json --redact --provider <id>` |
 | Devin quota is missing | Check the CLI login and `DEVIN_CREDENTIALS_FILE` if customized |
 | Muse quota is missing | Run `muse login` (API-key logins have no subscription quota); check `MUSE_AUTH_PATH` if customized. On macOS, a `storage: "keychain"` login also needs a one-time Keychain approval: run `herdr-agent-usage refresh --provider muse --keychain-approve` and click **Always Allow** |
 | Cursor quota is missing or stuck on a previous account | Run `cursor login`. On macOS, `cursor-agent login` stores the token in Keychain: run `herdr-agent-usage refresh --provider cursor --keychain-approve` and click **Always Allow**. The desktop app token is only used when the CLI has no login of its own **and** `$CURSOR_STATE_DB` is set |

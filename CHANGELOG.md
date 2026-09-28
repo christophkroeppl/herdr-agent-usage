@@ -6,8 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- A window whose provider label is another spelling of its own period renders
+  as the sidebar's slot label in the gauges layout: omp's month pool
+  (`Monthly` / `monthly`) shows as `30d` and keeps its meter, so that row
+  reads like the `5h` and `7d` rows beside it. The provider's word is
+  untouched in the cache and in the dashboard, a label that names something
+  else (`Daily`, a provider-specific pool) is never renamed, and a sidebar too
+  narrow to meter at all still shows the provider's label.
+
 ### Fixed
 
+- An omp or Pi pane Herdr has no readable session for now says so in the
+  sidebar instead of rendering a brand icon with no rows: `restart pane: no
+  omp session`, or for a session Herdr has named but the agent has not written
+  yet, `first turn writes the omp session`. Both lead with the step that
+  clears them, because a narrow sidebar truncates the row. Both measurements
+  came from the transcript, so an unreadable one leaves the pane with no
+  provider, no account, and nothing to show — the one state where an empty row
+  was the least obvious way for a correct install to look broken. A pane whose
+  transcript is already written keeps its earlier silence instead: a model
+  switch, a login that cannot be proved to pay for the pane, or a session this
+  build does not parse is not waiting for a first turn, and that row would
+  never clear.
+- Herdr's omp integration is now repaired from `startup` as well as
+  `configure --apply`. A machine that installed this plugin before it installed
+  omp skipped the collector once and never ran that path again, so every omp
+  pane afterwards was detected without a session — no quota, no model, no
+  explanation. Startup runs after every Herdr restart, installs the integration
+  once omp's own agent directory exists, and stays silent when it does not.
 - OpenCode Go quota now reads the console subscription meters behind the
   OpenCode console login — the same numbers the console page shows. The
   per-key `/zen/go/v1/usage` counters remain the fallback for stores without a

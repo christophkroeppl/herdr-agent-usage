@@ -4,7 +4,7 @@ pub mod cursor;
 pub mod font;
 pub mod grok;
 pub mod herdr;
-mod integration;
+pub(crate) mod integration;
 mod statusline;
 
 use crate::cache::CacheStore;

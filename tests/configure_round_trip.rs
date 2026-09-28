@@ -2964,6 +2964,108 @@ exit 0
     fs::set_permissions(&herdr, permissions).unwrap();
 }
 
+/// A stubbed Herdr that reports omp as missing, records an install, and
+/// answers the inventory call. `OMP_AGENT_DIR` names the directory an
+/// installed omp would own, so one stub serves both machine states.
+fn stub_omp_integration_machine(root: &Path) -> (PathBuf, PathBuf) {
+    let executable = root.join("herdr-omp");
+    let log = root.join("omp-install.log");
+    fs::write(
+        &executable,
+        format!(
+            r#"#!/bin/sh
+case "$1 $2" in
+  "integration status")
+    printf '%s\n' "omp: not installed ($OMP_AGENT_DIR/extensions/herdr-agent-state.ts)"
+    exit 0
+    ;;
+  "integration install")
+    printf '%s\n' "$1 $2 $3" >> '{}'
+    exit 0
+    ;;
+  "agent list")
+    printf '%s\n' '{{"result":{{"agents":[]}}}}'
+    exit 0
+    ;;
+esac
+exit 0
+"#,
+            log.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+    (executable, log)
+}
+
+/// `configure --apply` is a one-shot repair: a machine that installed omp
+/// after this plugin skipped Herdr's omp integration once and never ran that
+/// path again, so every omp pane afterwards was detected without a session and
+/// showed no quota. Startup runs after every server restart, which is where
+/// that skip is retried — and a machine without omp must stay silent.
+#[test]
+fn startup_repairs_the_omp_integration_once_omp_exists() {
+    let root = tempdir().unwrap();
+    let herdr = stub_omp_integration_machine(root.path());
+    let run = |state: &Path, agent_dir: &Path| {
+        fs::create_dir_all(state).unwrap();
+        let mut command = isolated_plugin_command();
+        command
+            .args(["startup", "--provider", "all"])
+            .env("HERDR_PLUGIN_STATE_DIR", state)
+            .env("HERDR_PLUGIN_CONFIG_DIR", state)
+            .env("HERDR_BIN_PATH", &herdr.0)
+            .env("OMP_AGENT_DIR", agent_dir)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join(".config"))
+            .env("XDG_DATA_HOME", root.path().join(".local/share"))
+            .env("CODEX_BIN_PATH", root.path().join("absent"))
+            .env("GROK_AUTH_FILE", root.path().join("absent"))
+            .env("DEVIN_CREDENTIALS_FILE", root.path().join("absent"))
+            .env("MUSE_AUTH_PATH", root.path().join("absent"))
+            .env("CURSOR_AUTH_FILE", root.path().join("absent"))
+            .env("CURSOR_STATE_DB", root.path().join("absent"))
+            .env_remove("HERDR_AGENT_QUOTA_AGENTS")
+            .env("HERDR_AGENT_QUOTA_AGENT_ORDER", "default")
+            .output()
+            .unwrap()
+    };
+
+    let agent = root.path().join(".omp/agent");
+    fs::create_dir_all(&agent).unwrap();
+    let repaired = run(&root.path().join("state"), &agent);
+    assert!(
+        repaired.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&repaired.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&repaired.stdout);
+    assert!(
+        stdout.contains("Installed Herdr's omp integration"),
+        "{stdout}"
+    );
+    let installs = fs::read_to_string(&herdr.1).unwrap_or_default();
+    assert!(
+        installs.contains("integration install omp"),
+        "startup did not install omp: {installs}"
+    );
+
+    fs::remove_file(&herdr.1).unwrap();
+    let bare = run(&root.path().join("bare-state"), &root.path().join("no-omp"));
+    assert!(bare.status.success());
+    assert!(
+        String::from_utf8_lossy(&bare.stdout).trim().is_empty(),
+        "a machine without omp must stay quiet: {}",
+        String::from_utf8_lossy(&bare.stdout)
+    );
+    assert!(
+        !herdr.1.exists(),
+        "startup installed omp without omp present"
+    );
+}
+
 /// The Herdr configure action has no `--agent` flag, so a list saved before
 /// Muse is what `is_full` sees. Without the upgrade that list is partial,
 /// and a machine without omp dies before any sidebar row is written.
@@ -3839,6 +3941,10 @@ fn pi_different_account_clears_stale_quota_and_cannot_borrow_codex_cache() {
     assert!(calls.contains("--clear-token quota_5h"), "{calls}");
     assert!(calls.contains("--clear-token quota_week"), "{calls}");
     assert!(!codex_log.exists(), "indeterminate route invoked Codex");
+    assert!(
+        !calls.contains("first turn"),
+        "a written transcript is not waiting for a first turn: {calls}"
+    );
 }
 
 #[test]

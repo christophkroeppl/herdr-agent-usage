@@ -88,6 +88,11 @@ pub fn run(providers: &[Provider], force: bool, json: bool) -> Result<()> {
 /// spend a socket call on every turn. A `default` order owns no view, so
 /// nothing is put back.
 pub fn startup(providers: &[Provider]) -> Result<()> {
+    // A machine can gain omp after this plugin was configured: `configure
+    // --apply` skipped Herdr's omp integration once, while omp was not there
+    // yet, and never ran again. Startup is the path that runs after every
+    // server restart, so it is where that one-shot skip is retried.
+    crate::configure::integration::repair_omp_at_startup(&AgentSelection::from_args_or_env(&[]));
     // Handoff need not emit another idle -> working event. An existing
     // watcher adopts the saved environment; otherwise this starts one.
     run(providers, true, false)?;
@@ -754,7 +759,63 @@ fn console_fallback_quota(
     .map(|values| PaneQuotaUpdate::Replace(Box::new(values))))
 }
 
-/// The layout the user chose and the meter size their sidebar affords,
+/// Why an omp or Pi pane has no quota to publish.
+///
+/// Both harnesses read the provider, the account pin, and the context window
+/// from the session Herdr points at, so without a readable one the pane cannot
+/// be attributed at all. That is a state the user cannot see: the row renders
+/// as a bare brand icon, which is the least obvious way for a correct install
+/// to look broken. The reason names the missing step instead.
+///
+/// Both sentences lead with the step that clears them, because the sidebar
+/// truncates the row: an action at the end of a sentence is an action the user
+/// never reads.
+///
+/// Herdr reports a transcript when the session starts, before the agent writes
+/// the file, so a path with nothing on disk yet is the ordinary "first turn has
+/// not happened yet" case; no path at all means Herdr never learned the
+/// session, which an installed integration plus a pane restart — or, on a
+/// machine that installed omp later, the startup repair — fixes.
+///
+/// A transcript that is already written and still could not be attributed is
+/// neither: a stray path, a shape this build does not parse, or a login that
+/// cannot be proved to pay for the pane. No turn clears those, so the pane
+/// keeps its earlier silence rather than naming a step that would not help.
+fn unattributed_session_reason(pane: &AgentPane) -> Option<String> {
+    let id = match pane.harness {
+        Harness::Omp => "omp",
+        Harness::Pi => "pi",
+        _ => return None,
+    };
+    let Some(path) = pane
+        .session
+        .as_ref()
+        .and_then(crate::herdr::AgentSession::path)
+    else {
+        return Some(format!("restart pane: no {id} session"));
+    };
+    if !transcript_unwritten(path) {
+        return None;
+    }
+    // Herdr reports the transcript when the session starts, before the agent
+    // writes it, so this sentence clears itself on the first turn.
+    Some(format!("first turn writes the {id} session"))
+}
+
+/// Whether Herdr named a transcript the agent has not written to yet.
+///
+/// Absent, or created and still empty, is the honest "no turn has happened"
+/// signal both harnesses produce at session start. Anything else — a file this
+/// build could not attribute, or a path whose state cannot even be read — is a
+/// different problem, and the pane is not told that a turn would fix it.
+fn transcript_unwritten(path: &str) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len() == 0,
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// The layout the user chose, and the meter size their sidebar affords,
 /// resolved once per refresh: the layout from the state-dir cache the publish
 /// hooks can see, the width from Herdr's own config.
 fn sidebar_shape(cache: &CacheStore) -> SidebarShape {
@@ -855,20 +916,29 @@ fn resolved_pane_tokens(
             Some(PaneQuotaUpdate::Clear)
         }
         Resolution::NoSubscription => None,
-        // An OpenCode pane that has not started a session cannot name its
-        // backend yet. With a console login on disk the account meters are
-        // unambiguous, so they stand in until the first session resolves; a
-        // session on another backend then clears them through the arms above.
-        Resolution::Indeterminate
+        // A pane with nothing to publish says what is missing instead of
+        // rendering an icon with no rows: an omp or Pi pane whose transcript
+        // is not there yet, or one whose agent was started before Herdr's
+        // integration for it existed and so was never given a session.
+        Resolution::Indeterminate => {
+            // An OpenCode pane that has not started a session cannot name its
+            // backend yet. With a console login on disk the account meters are
+            // unambiguous, so they stand in until the first session resolves; a
+            // session on another backend then clears them through the arms above.
             if needs_console_fallback(pane, identity.as_ref())
-                && crate::opencode::console_login_present() =>
-        {
-            console_fallback_quota(cache, now, row, force)?
+                && crate::opencode::console_login_present()
+            {
+                console_fallback_quota(cache, now, row, force)?
+            } else if let Some(reason) = unattributed_session_reason(pane) {
+                Some(PaneQuotaUpdate::Replace(Box::new(
+                    MetadataTokens::unavailable_for_harness(pane.harness, reason),
+                )))
+            } else if plugin_quota_present(&pane.tokens) || identity.is_some() {
+                Some(PaneQuotaUpdate::Clear)
+            } else {
+                None
+            }
         }
-        Resolution::Indeterminate if plugin_quota_present(&pane.tokens) || identity.is_some() => {
-            Some(PaneQuotaUpdate::Clear)
-        }
-        Resolution::Indeterminate => None,
     };
     if quota.is_none() && (identity.is_some() || context.is_some()) {
         quota = Some(PaneQuotaUpdate::Preserve);
@@ -1966,6 +2036,171 @@ mod tests {
             &test_pane("w1:p9", Harness::Claude),
             None
         ));
+    }
+
+    /// An omp pane Herdr has no session for used to publish an icon and
+    /// nothing else, which on screen is indistinguishable from a working pane
+    /// with no quota. It now names the missing step.
+    #[test]
+    fn an_omp_pane_without_a_session_publishes_the_reason_instead_of_nothing() {
+        let directory = tempdir().unwrap();
+        let cache = CacheStore::new(directory.path().join("state"));
+        let mut pane = test_pane("w1:p9", Harness::Omp);
+        let resolved = route::ResolvedPane {
+            resolution: Resolution::Indeterminate,
+            identity: None,
+            context: None,
+            omp: None,
+        };
+        let published = resolved_pane_tokens(
+            &cache,
+            &mut pane,
+            resolved,
+            CacheStore::now_unix(),
+            RowStyle::default(),
+            false,
+        )
+        .unwrap()
+        .expect("an unattributed omp pane publishes a reason");
+        let PaneQuotaUpdate::Replace(values) = published.quota else {
+            panic!("expected replaced quota, got {:?}", published.quota);
+        };
+        assert_eq!(values.quota_provider, "OMP");
+        let reason = values.quota_error.as_deref().unwrap_or_default();
+        assert_eq!(reason, "restart pane: no omp session");
+        assert!(values.quota_5h.is_empty() && values.quota_week.is_empty());
+        assert_eq!(values.quota_headroom, None);
+    }
+
+    /// Herdr reports the transcript when a session starts, before the agent
+    /// writes it, so a file that is not there is the ordinary first-turn case
+    /// and must not be blamed on a missing integration.
+    #[test]
+    fn an_omp_pane_with_an_unwritten_transcript_names_the_first_turn() {
+        let directory = tempdir().unwrap();
+        let mut pane = test_pane("w1:p9", Harness::Omp);
+        pane.session = Some(crate::herdr::AgentSession {
+            kind: Some("path".to_string()),
+            value: directory
+                .path()
+                .join("sessions/project/session.jsonl")
+                .to_string_lossy()
+                .into_owned(),
+        });
+        let reason = unattributed_session_reason(&pane).expect("a reason");
+        assert_eq!(reason, "first turn writes the omp session");
+    }
+
+    /// A transcript the agent has already written to is not waiting for
+    /// anything, whatever stopped the route from attributing the pane: a model
+    /// switch mid-session, an account this plugin cannot prove pays for it, a
+    /// shape it does not parse. Naming a first turn there is a claim no turn
+    /// clears, so the pane stays quiet instead.
+    #[test]
+    fn a_written_transcript_never_blames_the_first_turn() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let mut pane = test_pane("w1:p9", Harness::Omp);
+        pane.session = Some(crate::herdr::AgentSession {
+            kind: Some("path".to_string()),
+            value: path.to_string_lossy().into_owned(),
+        });
+
+        std::fs::write(&path, "{\"type\":\"session\"}\n").unwrap();
+        assert_eq!(unattributed_session_reason(&pane), None);
+
+        // A file the agent opened but has not written to yet is the ordinary
+        // first-turn case still.
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(
+            unattributed_session_reason(&pane).as_deref(),
+            Some("first turn writes the omp session")
+        );
+    }
+
+    /// A transcript path whose state cannot be read — a component replaced by a
+    /// file, a permission the plugin does not have — is not evidence that no
+    /// turn has happened. The pane keeps its earlier silence rather than
+    /// promising that a turn will fix what the file system refused to describe.
+    #[test]
+    fn an_unstattable_transcript_path_is_not_a_first_turn() {
+        let directory = tempdir().unwrap();
+        let blocker = directory.path().join("session.jsonl");
+        std::fs::write(&blocker, "{\"type\":\"session\"}\n").unwrap();
+        let mut pane = test_pane("w1:p9", Harness::Omp);
+        pane.session = Some(crate::herdr::AgentSession {
+            kind: Some("path".to_string()),
+            value: blocker.join("child.jsonl").to_string_lossy().into_owned(),
+        });
+        assert_eq!(unattributed_session_reason(&pane), None);
+    }
+
+    /// The shape the Pi route reaches when the login cannot be proved to pay
+    /// for the pane: the transcript is written, the model is known, and the
+    /// pane must go back to clearing stale rows rather than promising that a
+    /// turn will produce quota.
+    #[test]
+    fn an_attributed_pane_clears_instead_of_naming_a_first_turn() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        std::fs::write(&path, "{\"type\":\"session\"}\n").unwrap();
+        let cache = CacheStore::new(directory.path().join("state"));
+        let mut pane = test_pane("w1:p9", Harness::Pi);
+        pane.session = Some(crate::herdr::AgentSession {
+            kind: Some("path".to_string()),
+            value: path.to_string_lossy().into_owned(),
+        });
+        pane.tokens.insert(
+            "quota_week_normal".to_string(),
+            "7d  ▰▰▰▱▱▱  42%".to_string(),
+        );
+        let resolved = route::ResolvedPane {
+            resolution: Resolution::Indeterminate,
+            identity: Some(crate::herdr::PaneIdentity {
+                provider: "Codex".to_string(),
+                model: "model-b".to_string(),
+            }),
+            context: None,
+            omp: None,
+        };
+        let published = resolved_pane_tokens(
+            &cache,
+            &mut pane,
+            resolved,
+            CacheStore::now_unix(),
+            RowStyle::default(),
+            false,
+        )
+        .unwrap()
+        .expect("an indeterminate pane still publishes");
+        assert!(
+            matches!(published.quota, PaneQuotaUpdate::Clear),
+            "{:?}",
+            published.quota
+        );
+    }
+
+    /// Panes whose quota does not come from a transcript keep their existing
+    /// behavior: the arms above them (account quota, console fallback) decide.
+    #[test]
+    fn only_transcript_harnesses_carry_the_missing_session_reason() {
+        for harness in [
+            Harness::Claude,
+            Harness::Codex,
+            Harness::Grok,
+            Harness::Agy,
+            Harness::OpenCode,
+            Harness::Devin,
+            Harness::Muse,
+            Harness::Cursor,
+        ] {
+            assert_eq!(
+                unattributed_session_reason(&test_pane("w1:p9", harness)),
+                None,
+                "{harness:?}"
+            );
+        }
+        assert!(unattributed_session_reason(&test_pane("w1:p9", Harness::Pi)).is_some());
     }
 
     fn low(pairs: &[(&str, u8)]) -> BTreeMap<String, u8> {
