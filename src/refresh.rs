@@ -767,6 +767,10 @@ fn console_fallback_quota(
 /// as a bare brand icon, which is the least obvious way for a correct install
 /// to look broken. The reason names the missing step instead.
 ///
+/// Both sentences lead with the step that clears them, because the sidebar
+/// truncates the row: an action at the end of a sentence is an action the user
+/// never reads.
+///
 /// Herdr reports a transcript when the session starts, before the agent writes
 /// the file, so a path with no content is the ordinary "first turn has not
 /// happened yet" case; no path at all means Herdr never learned the session,
@@ -784,10 +788,10 @@ fn unattributed_session_reason(pane: &AgentPane) -> Option<String> {
             .as_ref()
             .and_then(crate::herdr::AgentSession::path)
         {
-            Some(_) => format!("{id} session file is empty until this pane's first turn"),
-            None => {
-                format!("no {id} session: install Herdr's {id} integration, then restart this pane")
-            }
+            // Herdr reports the transcript when the session starts, before the
+            // agent writes it, so this sentence clears itself on the first turn.
+            Some(_) => format!("first turn writes the {id} session"),
+            None => format!("restart pane: no {id} session"),
         },
     )
 }
@@ -2044,10 +2048,7 @@ mod tests {
         };
         assert_eq!(values.quota_provider, "OMP");
         let reason = values.quota_error.as_deref().unwrap_or_default();
-        assert!(
-            reason.contains("install Herdr's omp integration"),
-            "{reason}"
-        );
+        assert_eq!(reason, "restart pane: no omp session");
         assert!(values.quota_5h.is_empty() && values.quota_week.is_empty());
         assert_eq!(values.quota_headroom, None);
     }
@@ -2063,8 +2064,7 @@ mod tests {
             value: "/home/u/.omp/agent/sessions/project/session.jsonl".to_string(),
         });
         let reason = unattributed_session_reason(&pane).expect("a reason");
-        assert!(reason.contains("first turn"), "{reason}");
-        assert!(reason.starts_with("omp "), "{reason}");
+        assert_eq!(reason, "first turn writes the omp session");
     }
 
     /// Panes whose quota does not come from a transcript keep their existing
