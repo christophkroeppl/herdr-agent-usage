@@ -126,10 +126,14 @@ fn install_omp() -> Result<(), String> {
 
 /// Whether the agent an integration feeds has a directory on this machine.
 ///
-/// Herdr prints the extension's own path in the status line, and it is always
-/// `<agent dir>/…/<file>`, so the grandparent existing is the honest "this
-/// agent is installed" signal — without guessing at paths this plugin does not
-/// own, and without spawning the agent on every restart.
+/// Herdr prints the extension's own path in the status line, and the path's
+/// depth is Herdr's own per-harness choice — `<root>/hooks/<file>` for the
+/// shimmed CLIs, `<agent dir>/extensions/<file>` for omp — so the grandparent is
+/// the agent directory for the shape this build reads, and a unit test pins it.
+/// A deeper target still answers correctly, because every part of it lives under
+/// the agent directory; a shallower one would quietly weaken the signal, so an
+/// unrecognized status line installs nothing rather than guessing at paths this
+/// plugin does not own.
 fn agent_dir_present(status: &str, id: &str) -> bool {
     integration_target(status, id)
         .and_then(|path| Some(path.parent()?.parent()?.to_path_buf()))
