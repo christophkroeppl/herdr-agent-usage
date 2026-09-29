@@ -21,6 +21,11 @@ pub enum Provider {
     /// it has no 1:1 harness mapping and is only ever fetched for a pane that
     /// resolved to it, so the original four keep their exact refresh behavior.
     OpenCodeGo,
+    /// Kilo Code's Kilo Pass credit allowance, read from the account's own
+    /// subscription state. Scoped like OpenCode Go: a Kilo pane can be served
+    /// by any backend, so this is only ever fetched for a pane that resolved to
+    /// the Kilo Gateway.
+    Kilo,
     /// Quota reported by omp's own provider-agnostic usage layer. This is a
     /// scoped collector only; it is never part of a bare provider refresh.
     Omp,
@@ -58,7 +63,7 @@ impl Provider {
     /// shows one only once it has something cached — a permanent
     /// "unavailable" row for a subscription the user does not have would be
     /// noise, not information.
-    pub const SCOPED: [Self; 1] = [Self::OpenCodeGo];
+    pub const SCOPED: [Self; 2] = [Self::OpenCodeGo, Self::Kilo];
 
     pub fn display_name(self) -> &'static str {
         match self {
@@ -67,6 +72,7 @@ impl Provider {
             Self::Claude => "Claude",
             Self::Agy => "Agy",
             Self::OpenCodeGo => "OpenCode Go",
+            Self::Kilo => "Kilo",
             Self::Omp => "OMP",
             Self::Devin => "Devin",
             Self::Muse => "Muse",
@@ -83,6 +89,8 @@ impl Provider {
             // Scoped to the OpenCode credential store so it can never collide
             // with the original four's 0.2 filenames.
             Self::OpenCodeGo => "opencode-go.opencode-store",
+            // Scoped to the Kilo credential store, for the same reason.
+            Self::Kilo => "kilo-pass.kilo-store",
             Self::Omp => "omp-usage",
             Self::Devin => "devin-cli-billing",
             Self::Muse => "muse-code-subscription",
@@ -106,6 +114,7 @@ pub enum Harness {
     Devin,
     Muse,
     Cursor,
+    Kilo,
 }
 
 impl Harness {
@@ -123,6 +132,7 @@ impl Harness {
             "devin" | "devin-cli" => Some(Self::Devin),
             "muse" | "muse-code" => Some(Self::Muse),
             "cursor" | "cursor-agent" | "cursor-cli" => Some(Self::Cursor),
+            "kilo" | "kilo-code" | "kilocode" => Some(Self::Kilo),
             _ => None,
         }
     }
@@ -138,7 +148,7 @@ impl Harness {
             Self::Devin => Some(Provider::Devin),
             Self::Muse => Some(Provider::Muse),
             Self::Cursor => Some(Provider::Cursor),
-            Self::OpenCode | Self::Pi | Self::Omp => None,
+            Self::OpenCode | Self::Pi | Self::Omp | Self::Kilo => None,
         }
     }
 
@@ -163,6 +173,7 @@ impl Harness {
             Self::Devin => "Devin",
             Self::Muse => "Muse",
             Self::Cursor => "Cursor",
+            Self::Kilo => "Kilo",
         }
     }
 }
@@ -180,6 +191,10 @@ impl CredentialScope {
     /// billed to a subscription this plugin can also collect canonically, so
     /// the scope is what keeps the two apart.
     pub const OMP_STORE: Self = Self("omp-store");
+    /// Kilo's own credential store (`~/.local/share/kilo/auth.json`). A Kilo
+    /// pane can run on the Kilo Gateway or on another provider entirely, so
+    /// the scope is what keeps the Kilo Pass reading off everything else.
+    pub const KILO_STORE: Self = Self("kilo-store");
 
     pub fn as_str(self) -> &'static str {
         self.0
@@ -210,6 +225,18 @@ impl BillingTarget {
         Self {
             billing: Provider::OpenCodeGo,
             credential_scope: CredentialScope::OPENCODE_STORE,
+            scope_hash: None,
+        }
+    }
+
+    /// A Kilo pane running on the Kilo Gateway, billed to the login in Kilo's
+    /// own store. Scoped for the same reason as OpenCode Go: a Kilo session on
+    /// another backend is a different subscription and must never share this
+    /// cache file.
+    pub fn kilo_gateway() -> Self {
+        Self {
+            billing: Provider::Kilo,
+            credential_scope: CredentialScope::KILO_STORE,
             scope_hash: None,
         }
     }
@@ -995,6 +1022,7 @@ impl ProviderSnapshot {
             | Provider::Claude
             | Provider::Agy
             | Provider::OpenCodeGo
+            | Provider::Kilo
             | Provider::Omp
             | Provider::Devin
             | Provider::Muse => {

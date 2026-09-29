@@ -70,9 +70,10 @@ cd herdr-agent-usage
 | `devin` | `devin` | `~/.local/share/devin` |
 | `muse` | `muse`、`muse-code` | `~/.config/muse` |
 | `cursor` | `cursor`、`cursor-agent` | `~/.cursor` |
+| `kilo` | `kilo` | `~/.local/share/kilo` |
 
 当前支持列表（只许追加，不许重排）：
-`claude,codex,grok,agy,opencode,pi,omp,devin,muse,cursor`。
+`claude,codex,grok,agy,opencode,pi,omp,devin,muse,cursor,kilo`。
 
 一个都没探测到：安装 **all**，并明确告诉用户。优先只装探测到的子集——
 `configure` 会给选中的 Claude/Agy 写 statusLine、给 Cursor 写 hooks，不要
@@ -131,7 +132,7 @@ herdr integration status
 对每个**已探测到**、且状态为 `not installed` 的 id 执行
 `herdr integration install <id>`：
 
-`claude`、`codex`、`grok`、`opencode`、`pi`、`omp`、`devin`、`cursor`。
+`claude`、`codex`、`grok`、`opencode`、`pi`、`omp`、`devin`、`cursor`、`kilo`。
 
 用户没有的不要装。选了 omp 时 `configure` 会尝试自动装；机器上没有 omp
 应跳过，而不是让整次配置失败。
@@ -245,6 +246,7 @@ Hook 和 integration 只在会话启动时加载：
 | Claude/Agy 没有额度 | 在该会话发一轮。 |
 | OMP 没有额度 | `omp usage --json --redact --provider <id>` 必须能跑通。 |
 | Cursor 没有额度或仍是上一账号 | `cursor login` / `cursor-agent login`，再按上面做钥匙串 **Always Allow**。 |
+| Kilo 没有额度 | `kilo auth list` 里要有 **Kilo Gateway** 的 `oauth` 登录，且该 pane 的会话后端是 Kilo Gateway。Kilo 没有 5h/7d：只有 Kilo Pass 套餐才有可读的额度（30d）。用共享余额的账号，或跑在 OpenRouter／OpenCode Go 上的 pane，都没有 Kilo 额度可显示。 |
 | Muse 没有额度 | `muse login`（API key 登录没有订阅额度）；`storage` 为 `keychain` 时要批准钥匙串。 |
 | 图标是方框 / `?` | 字体 + 终端映射 + 重载；见第 4 节。 |
 | gauges 没有进度条 | 侧栏大约窄于 24 列是预期；拉宽后 `prefix+shift+r`。 |

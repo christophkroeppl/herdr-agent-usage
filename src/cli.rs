@@ -88,7 +88,7 @@ pub enum Command {
         #[arg(long, conflicts_with_all = ["check", "apply"])]
         uninstall: bool,
         /// Agents to configure: all, claude, codex, grok, agy, opencode, pi,
-        /// omp, devin, muse, cursor. Repeat or comma-separate to pick several. Defaults to
+        /// omp, devin, muse, cursor, kilo. Repeat or comma-separate to pick several. Defaults to
         /// every supported agent (or $HERDR_AGENT_QUOTA_AGENTS when set), so
         /// `--uninstall` alone still removes everything this plugin installed.
         #[arg(long, value_delimiter = ',')]
@@ -197,6 +197,7 @@ pub enum AgentSelection {
     Devin,
     Muse,
     Cursor,
+    Kilo,
 }
 
 /// How quota tokens are arranged in Herdr's agent sidebar.
@@ -895,7 +896,7 @@ impl AgentSelection {
     /// New agents are appended, never inserted, so a saved complete list from
     /// an earlier build is a proper prefix of this array and can still mean
     /// "everything on" after a provider is added.
-    pub const SUPPORTED: [Harness; 10] = [
+    pub const SUPPORTED: [Harness; 11] = [
         Harness::Claude,
         Harness::Codex,
         Harness::Grok,
@@ -906,6 +907,7 @@ impl AgentSelection {
         Harness::Devin,
         Harness::Muse,
         Harness::Cursor,
+        Harness::Kilo,
     ];
 
     /// Length of the first complete list the settings pane persisted.
@@ -932,6 +934,7 @@ impl AgentSelection {
             Self::Devin => Some(Harness::Devin),
             Self::Muse => Some(Harness::Muse),
             Self::Cursor => Some(Harness::Cursor),
+            Self::Kilo => Some(Harness::Kilo),
         }
     }
 
@@ -947,6 +950,7 @@ impl AgentSelection {
             Harness::Devin => "devin",
             Harness::Muse => "muse",
             Harness::Cursor => "cursor",
+            Harness::Kilo => "kilo",
         }
     }
 
@@ -1023,6 +1027,7 @@ impl AgentSelection {
             "devin" => Some(Self::Devin),
             "muse" => Some(Self::Muse),
             "cursor" => Some(Self::Cursor),
+            "kilo" => Some(Self::Kilo),
             _ => None,
         }
     }
@@ -1305,14 +1310,18 @@ mod tests {
             "claude,codex,grok,agy,opencode,pi,omp,devin"
         );
         let pre_cursor = &AgentSelection::SUPPORTED[..AgentSelection::SUPPORTED.len() - 1];
+        // Walked, not copied: the point of the case is that whatever list was
+        // saved before the newest agent existed is still read as itself.
+        let pre_cursor_list = pre_cursor
+            .iter()
+            .map(|harness| AgentSelection::harness_name(*harness))
+            .collect::<Vec<_>>()
+            .join(",");
         assert_eq!(
             AgentSelection::as_stored_list(pre_cursor),
-            "only,claude,codex,grok,agy,opencode,pi,omp,devin,muse"
+            format!("only,{pre_cursor_list}")
         );
-        assert_eq!(
-            AgentSelection::as_cli_list(pre_cursor),
-            "claude,codex,grok,agy,opencode,pi,omp,devin,muse"
-        );
+        assert_eq!(AgentSelection::as_cli_list(pre_cursor), pre_cursor_list);
     }
 
     #[test]

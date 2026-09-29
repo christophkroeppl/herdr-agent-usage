@@ -1,4 +1,10 @@
 use crate::herdr::{AgentPane, PaneIdentity};
+use crate::kilo::{
+    classify_kilo, lookup_session as lookup_kilo_session,
+    model_context_window as kilo_model_context_window, read_auth as read_kilo_auth,
+    AuthReadError as KiloAuthReadError, KiloPaths, SessionEvidence as KiloSessionEvidence,
+    SessionLookup as KiloSessionLookup,
+};
 use crate::model::{BillingTarget, ContextUsage, Harness, Resolution};
 use crate::opencode::{
     classify_opencode, env_go_key_present, lookup_session, model_context_window, read_auth,
@@ -44,6 +50,12 @@ pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
             return resolve_opencode_with_identity(
                 pane.session.as_ref().and_then(|session| session.id()),
                 OpenCodePaths::from_env(),
+            )
+        }
+        Harness::Kilo => {
+            return resolve_kilo_with_identity(
+                pane.session.as_ref().and_then(|session| session.id()),
+                KiloPaths::from_env(),
             )
         }
         Harness::Pi => {
@@ -161,6 +173,58 @@ fn indeterminate_pane() -> ResolvedPane {
         context: None,
         omp: None,
     }
+}
+
+/// Kilo panes resolve through their own session, exactly as OpenCode panes do.
+///
+/// Kilo runs several backends, so the provider the session names is what
+/// decides: `kilo` is the Kilo Gateway and resolves to the Kilo Pass reading,
+/// anything else is either another subscription or unproven. A missing session
+/// is [`Resolution::Indeterminate`] — the pane keeps its prior metadata rather
+/// than inheriting the signed-in account's numbers.
+fn resolve_kilo_with_identity(session_id: Option<&str>, paths: Option<KiloPaths>) -> ResolvedPane {
+    let Some(session_id) = session_id.filter(|id| !id.is_empty()) else {
+        return indeterminate_pane();
+    };
+    let Some(paths) = paths else {
+        return indeterminate_pane();
+    };
+    let lookup = lookup_kilo_session(&paths, session_id);
+    let session = match &lookup {
+        KiloSessionLookup::Found(session) => Some(session),
+        KiloSessionLookup::Missing | KiloSessionLookup::Unreadable => None,
+    };
+    let identity = session.and_then(kilo_identity);
+    let context = session.and_then(|session| kilo_context(&paths, session));
+    let auth = read_kilo_auth(&paths);
+    let resolution = classify_kilo(lookup, auth.as_ref().map_err(|_| KiloAuthReadError));
+    ResolvedPane {
+        resolution,
+        identity,
+        context,
+        omp: None,
+    }
+}
+
+fn kilo_identity(session: &KiloSessionEvidence) -> Option<PaneIdentity> {
+    let provider = match session.provider_id.as_deref()? {
+        crate::kilo::GATEWAY_PROVIDER_ID => "Kilo".to_string(),
+        value => safe_identity_part(value)?,
+    };
+    let model = match session.model_id.as_deref() {
+        Some(value) => safe_identity_part(value)?,
+        None => String::new(),
+    };
+    Some(PaneIdentity { provider, model })
+}
+
+fn kilo_context(paths: &KiloPaths, session: &KiloSessionEvidence) -> Option<ContextUsage> {
+    let provider_id = session.provider_id.as_deref()?;
+    let model_id = session.model_id.as_deref()?;
+    let context_tokens = session.context_tokens?;
+    let context_window = kilo_model_context_window(paths, provider_id, model_id)?;
+    let used_percent = (context_tokens as f64 / context_window as f64 * 100.0).clamp(0.0, 100.0);
+    ContextUsage::new(used_percent).ok()
 }
 
 fn opencode_identity(session: &SessionEvidence) -> Option<PaneIdentity> {

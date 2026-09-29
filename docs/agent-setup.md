@@ -75,9 +75,10 @@ tokens, not every alias you saw.
 | `devin` | `devin` | `~/.local/share/devin` |
 | `muse` | `muse`, `muse-code` | `~/.config/muse` |
 | `cursor` | `cursor`, `cursor-agent` | `~/.cursor` |
+| `kilo` | `kilo` | `~/.local/share/kilo` |
 
 Supported set (append-only; do not reorder):
-`claude,codex,grok,agy,opencode,pi,omp,devin,muse,cursor`.
+`claude,codex,grok,agy,opencode,pi,omp,devin,muse,cursor,kilo`.
 
 If nothing matches, install **all** and say so. Prefer the detected subset:
 `configure` writes Claude/Agy `statusLine` entries and Cursor hooks only for
@@ -139,7 +140,7 @@ herdr integration status
 For each **detected** agent whose line is `not installed`, run
 `herdr integration install <id>`:
 
-`claude`, `codex`, `grok`, `opencode`, `pi`, `omp`, `devin`, `cursor`.
+`claude`, `codex`, `grok`, `opencode`, `pi`, `omp`, `devin`, `cursor`, `kilo`.
 
 Skip ids the user does not have. `configure` already tries omp when omp is
 selected; a machine without omp must skip it, not fail the rest.
@@ -260,6 +261,7 @@ Hooks and integrations load at session start:
 | OMP quota empty | `omp usage --json --redact --provider <id>` must work. |
 | Cursor quota empty or stuck on an old account | `cursor login` / `cursor-agent login`, then Keychain **Always Allow** as above. |
 | Muse quota empty | `muse login` (API-key logins have no subscription quota); Keychain approve if `storage` is `keychain`. |
+| Kilo quota empty | `kilo auth list` must show a **Kilo Gateway** `oauth` login, and the pane's session must be on the Kilo Gateway backend. Kilo has no 5h/7d window: only a Kilo Pass plan has an allowance to read (30d). An account on a shared credit balance, or a pane running on OpenRouter/OpenCode Go, has no Kilo quota to show. |
 | Icons are boxes / `?` | Font + terminal map + reload; see §4. |
 | Gauges meters missing | Sidebar narrower than ~24 columns; widen, then `prefix+shift+r`. |
 | `gauges` still the old width | `prefix+shift+r`. There is no live resize publish path. |

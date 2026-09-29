@@ -738,19 +738,31 @@ mod tests {
     /// and it names the agents so a narrowed selection is what gets installed.
     /// A complete selection is `all`, so a later provider is included without
     /// rewriting the preference.
+    /// The `--agent` list a draft writes, with one harness left out. Walked
+    /// from `SUPPORTED` so appending an agent does not rewrite this test.
+    fn expected_agents(without: Harness) -> String {
+        AgentSelection::SUPPORTED
+            .into_iter()
+            .filter(|harness| *harness != without)
+            .map(AgentSelection::harness_name)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     #[test]
     fn applying_names_every_value_including_the_agent_selection() {
         let mut draft = settings();
         draft.cycle(Row::Choice(Choice::Percent), 1);
         draft.cycle(Row::Field(SidebarField::Topic), 1);
         draft.cycle(Row::Agent(Harness::Pi), 1);
+        let agents = expected_agents(Harness::Pi);
         assert_eq!(
             draft.apply_arguments(),
             vec![
                 "configure",
                 "--apply",
                 "--agent",
-                "claude,codex,grok,agy,opencode,omp,devin,muse,cursor",
+                &agents,
                 "--quota-percent",
                 "used",
                 "--sidebar-pacing",
@@ -802,16 +814,15 @@ mod tests {
         assert_eq!(arguments[agent + 1], "all");
     }
 
+    /// The newest agent is `SUPPORTED`'s last entry, whoever that is today.
     #[test]
     fn turning_the_newest_agent_off_is_an_exact_cli_list() {
+        let newest = *AgentSelection::SUPPORTED.last().unwrap();
         let mut draft = settings();
-        draft.cycle(Row::Agent(Harness::Cursor), 1);
+        draft.cycle(Row::Agent(newest), 1);
         let arguments = draft.apply_arguments();
         let agent = arguments.iter().position(|flag| flag == "--agent").unwrap();
-        assert_eq!(
-            arguments[agent + 1],
-            "claude,codex,grok,agy,opencode,pi,omp,devin,muse"
-        );
+        assert_eq!(arguments[agent + 1], expected_agents(newest));
     }
 
     /// Turning every field off is a real choice, and `configure` accepts the

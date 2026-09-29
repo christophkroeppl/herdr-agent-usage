@@ -1094,9 +1094,9 @@ fn refresh_omp_target(
 /// Refresh a billing target that has no 1:1 harness collector.
 ///
 /// Failure is deliberately silent: the pane keeps the last good snapshot for
-/// this same target rather than being cleared, and a missing key is a normal
-/// state (the user may not have a Go subscription) rather than an error worth
-/// surfacing on every event.
+/// this same target rather than being cleared, and a missing credential is a
+/// normal state (the user may not have that subscription) rather than an error
+/// worth surfacing on every event.
 fn refresh_scoped_target(cache: &CacheStore, target: &BillingTarget, force: bool) {
     let now = CacheStore::now_unix();
     if should_skip_fetch(cache, target.billing, force, now).unwrap_or(true) {
@@ -1105,6 +1105,16 @@ fn refresh_scoped_target(cache: &CacheStore, target: &BillingTarget, force: bool
     let Ok(Some(_lease)) = cache.try_lock_target_refresh(target) else {
         return;
     };
+    match target.billing {
+        Provider::OpenCodeGo => refresh_opencode_go(cache, target, now),
+        Provider::Kilo => refresh_kilo(cache, target, now),
+        // `Provider::SCOPED` is the only list that reaches this function.
+        other => debug_assert!(false, "unscoped provider {other:?} has its own path"),
+    }
+}
+
+/// The OpenCode Go meter, from the login its own panes spend behind.
+fn refresh_opencode_go(cache: &CacheStore, target: &BillingTarget, now: u64) {
     let Some(paths) = OpenCodePaths::from_env() else {
         return;
     };
@@ -1136,6 +1146,30 @@ fn refresh_scoped_target(cache: &CacheStore, target: &BillingTarget, force: bool
         },
     };
     if let Ok(snapshot) = fetched {
+        let _ = cache.save(&snapshot);
+    }
+}
+
+/// The Kilo Pass meter, from the gateway login that pays for Kilo Gateway panes.
+///
+/// One request per debounce window for the one account the store is signed in
+/// as. An account with no plan is not an error: the endpoint answers 200 with a
+/// null subscription, which stays an error here so the pane keeps whatever it
+/// had, and a pane that never had a reading simply shows none.
+fn refresh_kilo(cache: &CacheStore, target: &BillingTarget, now: u64) {
+    let Some(paths) = crate::kilo::KiloPaths::from_env() else {
+        return;
+    };
+    let Some(credential) = crate::kilo::gateway_credential(&paths) else {
+        return;
+    };
+    if cache
+        .mark_refresh_account(target.billing, now, Some(&credential.account_id))
+        .is_err()
+    {
+        return;
+    }
+    if let Ok(snapshot) = crate::providers::kilo::fetch(&credential) {
         let _ = cache.save(&snapshot);
     }
 }
@@ -1241,9 +1275,9 @@ fn refresh_provider(
         Provider::Muse => muse::fetch_for_sessions(&session_ids).map(FetchedSnapshot::direct),
         Provider::Cursor => cursor::fetch_for_sessions(&session_ids).map(FetchedSnapshot::direct),
         Provider::Claude | Provider::Agy => load_statusline_snapshot(cache, provider),
-        // OpenCode Go is fetched for a resolved pane, never through the
-        // provider list; see `fetch_opencode_go`.
-        Provider::OpenCodeGo | Provider::Omp => Err(anyhow::anyhow!(
+        // OpenCode Go and Kilo are fetched for a resolved pane, never through
+        // the provider list; see `refresh_scoped_target`.
+        Provider::OpenCodeGo | Provider::Kilo | Provider::Omp => Err(anyhow::anyhow!(
             "scoped providers are refreshed per resolved pane, not through --provider"
         )),
     };
@@ -1381,6 +1415,16 @@ fn current_account_gate(provider: Provider) -> (Option<String>, Option<u64>) {
         Provider::Cursor => (cursor::current_account_id(), cursor::auth_mtime_unix()),
         Provider::OpenCodeGo => (
             OpenCodePaths::from_env().and_then(|paths| crate::opencode::go_account_id(&paths)),
+            None,
+        ),
+        // The gateway login is the account a Kilo Pass reading belongs to, so a
+        // cached snapshot for another login is rejected the same way any other
+        // provider's is. The credential's own mtime is not a login generation:
+        // Kilo rewrites `auth.json` in place on refresh.
+        Provider::Kilo => (
+            crate::kilo::KiloPaths::from_env()
+                .and_then(|paths| crate::kilo::gateway_credential(&paths))
+                .map(|credential| credential.account_id),
             None,
         ),
         Provider::Claude | Provider::Agy | Provider::Omp => (None, None),
@@ -2020,6 +2064,148 @@ mod tests {
             "7d row: {}",
             values.quota_week
         );
+    }
+
+    /// A Kilo pane resolves through its own session: the Kilo Gateway one to
+    /// the Kilo Pass target with the model and context its messages carry, and
+    /// a session on another backend to that backend's own billing — never to
+    /// Kilo's.
+    #[test]
+    fn a_kilo_pane_resolves_through_its_session() {
+        let directory = tempdir().unwrap();
+        let data = directory.path().join("data");
+        let cache = directory.path().join("cache");
+        std::fs::create_dir_all(data.join("kilo")).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            data.join("kilo").join("auth.json"),
+            br#"{"kilo":{"type":"oauth","refresh":"rt","access":"st_access"},"openrouter":{"type":"api","key":"or"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(cache.join("kilo")).unwrap();
+        std::fs::write(
+            cache.join("kilo").join("models.json"),
+            br#"{"kilo":{"models":{"space-bunny":{"limit":{"context":1000000}}}}}"#,
+        )
+        .unwrap();
+        crate::kilo::write_fixture_db(
+            &data.join("kilo").join("kilo.db"),
+            &[
+                (
+                    "ses_gateway",
+                    r#"{"role":"assistant","providerID":"kilo","modelID":"space-bunny","tokens":{"input":1000,"output":10,"reasoning":0,"cache":{"read":900,"write":90}}}"#,
+                ),
+                (
+                    "ses_router",
+                    r#"{"role":"assistant","providerID":"openrouter","modelID":"some/model"}"#,
+                ),
+            ],
+        )
+        .unwrap();
+
+        let gateway = test_pane_with_session("w1:p1", Harness::Kilo, "ses_gateway");
+        let router = test_pane_with_session("w1:p2", Harness::Kilo, "ses_router");
+        let mut gateway_route = None;
+        let mut router_route = None;
+        crate::prefs::testing::with_env(
+            &[
+                ("XDG_DATA_HOME", Some(data.as_os_str())),
+                ("XDG_CACHE_HOME", Some(cache.as_os_str())),
+            ],
+            || {
+                gateway_route = Some(route::resolve_with_identity(&gateway));
+                router_route = Some(route::resolve_with_identity(&router));
+            },
+        );
+        let gateway = gateway_route.expect("gateway route");
+        let router = router_route.expect("router route");
+
+        assert_eq!(
+            gateway.resolution,
+            Resolution::Subscription(crate::model::BillingTarget::kilo_gateway())
+        );
+        let identity = gateway.identity.expect("identity");
+        assert_eq!(identity.provider, "Kilo");
+        assert_eq!(identity.model, "space-bunny");
+        let context = gateway.context.expect("context");
+        assert!((context.used_percent - 0.2).abs() < 1e-9, "{context:?}");
+
+        // A Kilo pane running on another backend owns no Kilo allowance.
+        assert_eq!(router.resolution, Resolution::NoSubscription);
+        assert_eq!(router.identity.unwrap().provider, "openrouter");
+    }
+
+    /// The whole scoped path for Kilo: the cached reading for *this* account
+    /// publishes a monthly row and leaves 5h/7d empty, because Kilo publishes no
+    /// short window. A snapshot stamped for another login is refused instead.
+    #[test]
+    fn a_kilo_pane_publishes_only_the_monthly_credit_window() {
+        let directory = tempdir().unwrap();
+        let data = directory.path().join("data");
+        std::fs::create_dir_all(data.join("kilo")).unwrap();
+        std::fs::write(
+            data.join("kilo").join("auth.json"),
+            br#"{"kilo":{"type":"oauth","refresh":"rt","access":"st_access"}}"#,
+        )
+        .unwrap();
+        let cache = CacheStore::new(directory.path().join("state"));
+        let account = crate::providers::credential_id("st_access");
+
+        crate::prefs::testing::with_env(&[("XDG_DATA_HOME", Some(data.as_os_str()))], || {
+            for (owner, expected_error) in [
+                (account.as_str(), None),
+                ("someone-else", Some("signed-in account changed")),
+            ] {
+                let mut snapshot = ProviderSnapshot::new(
+                    Provider::Kilo,
+                    vec![window(WindowKind::Monthly, 20.6, 1_790_950_387)],
+                    1,
+                );
+                snapshot.account_id = Some(owner.to_string());
+                cache.save(&snapshot).unwrap();
+                // A just-attempted refresh keeps this test off the network.
+                cache
+                    .mark_refresh_account(Provider::Kilo, CacheStore::now_unix(), Some(owner))
+                    .unwrap();
+
+                let mut pane = test_pane_with_session("w1:p9", Harness::Kilo, "ses_gateway");
+                let resolved = route::ResolvedPane {
+                    resolution: Resolution::Subscription(
+                        crate::model::BillingTarget::kilo_gateway(),
+                    ),
+                    identity: None,
+                    context: None,
+                    omp: None,
+                };
+                let published = resolved_pane_tokens(
+                    &cache,
+                    &mut pane,
+                    resolved,
+                    CacheStore::now_unix(),
+                    RowStyle::default(),
+                    false,
+                )
+                .unwrap()
+                .expect("quota publishes tokens");
+                let PaneQuotaUpdate::Replace(values) = published.quota else {
+                    panic!("expected replaced quota, got {:?}", published.quota);
+                };
+                assert_eq!(values.quota_5h, "", "5h must stay empty");
+                assert_eq!(values.quota_week, "", "7d must stay empty");
+                match expected_error {
+                    None => {
+                        assert!(values.quota_month.starts_with("30d "), "{values:?}");
+                        assert_eq!(values.quota_error, None);
+                    }
+                    Some(error) => {
+                        // Another account's reading is refused outright: no
+                        // window row, and a reason that names the cause.
+                        assert_eq!(values.quota_month, "", "{values:?}");
+                        assert_eq!(values.quota_error.as_deref(), Some(error));
+                    }
+                }
+            }
+        });
     }
 
     #[test]

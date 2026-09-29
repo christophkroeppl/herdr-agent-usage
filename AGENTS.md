@@ -253,6 +253,56 @@ hooks at session start, so an already-running pane must be restarted. Do not
 install a Cursor `statusLine` — that setting replaces the native CLI footer. Cursor publishes no prompt-cache lifetime, so there is
 no TTL. Cache identity is `sha256("cursor\0" || token)`.
 
+## Kilo's quota is the Kilo Pass credit period, not a rolling window
+
+Kilo is already a Herdr harness — `herdr integration install kilo` gives it state
+and session integration — so this plugin only had to add the readout. It has no
+5h or 7h bucket for the Kilo Gateway. The allowance Kilo publishes is a monthly
+credit total, so `src/providers/kilo.rs` produces exactly one
+`WindowKind::Monthly` window and the 5h/7d sidebar tokens stay empty. Do not
+"fill in" a short window from the monthly number.
+
+Three sources, all read-only, in order of authority:
+
+1. **Session evidence** — `~/.local/share/kilo/kilo.db`, opened read-only, the
+   same bounded `message`/`session_message` tail the OpenCode reader uses (Kilo
+   is an OpenCode fork and kept the v1/v2 table pair). It names the backend, the
+   model, and the latest completed assistant turn's tokens for context.
+2. **Context window** — `~/.cache/kilo/models.json`,
+   `kilo.models[model].limit.context`, same exact lookup as OpenCode's catalog.
+3. **Quota** — `GET https://api.kilo.ai/api/trpc/kiloPass.getState`, the tRPC
+   procedure the CLI itself calls for the "Kilo Pass" line in its account panel,
+   authenticated with the OAuth device login in `auth.json`. The amounts are
+   JSON numbers in US dollars. The host is pinned; `KILO_API_URL` is not
+   honoured, because a configured override would move the login to a host this
+   plugin cannot vouch for.
+
+Attribution is by the login, not by the harness. A Kilo pane can be served by
+OpenRouter, OpenCode Go, or anything else Kilo can drive, so `classify_kilo`
+resolves to the Kilo Pass target only when the session's provider is `kilo`
+**and** the store holds that provider's `oauth` entry. A gateway API key
+(`KILO_API_KEY`, or a `kilo` entry of type `api`) is deliberately not accepted:
+it bills the same account but cannot name it, so it can never be the attribution
+for a reading. The identity stamped on the snapshot is
+`credential_id(access)`, the same token-hash stamp Cursor uses; Kilo rotates
+that token, so a rotation invalidates the cached snapshot and the next refresh
+re-reads it. Never the refresh token, and no keychain or TCC path.
+
+Two answers are normal and must degrade quietly rather than become a number:
+
+- `subscription: null` — the account has no Kilo Pass and pays from a shared
+  credit balance. There is no balance window: `/api/profile/balance` reports a
+  dollar amount with no limit attached, and a percentage invented from it would
+  be a guess.
+- A `status` outside `active`/`past_due`/`trialing` — the same set the CLI uses.
+  A cancelled or unpaid plan has nothing left to meter.
+
+The allowance is `currentPeriodBaseCreditsUsd` plus
+`currentPeriodBonusCreditsUsd`: bonus credits are granted into the same period
+and expire with it, so they are allowance rather than a top-up outside the
+window. Both halves of the ratio are required — a missing spend would read as
+an untouched period, which presents as a full allowance.
+
 ## Herdr state this plugin owns outside a pane
 
 Two things reach past the pane metadata, and both are global to the Herdr

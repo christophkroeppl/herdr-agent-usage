@@ -4,6 +4,7 @@ pub mod codex;
 pub mod cursor;
 pub mod devin;
 pub mod grok;
+pub mod kilo;
 pub mod muse;
 pub mod omp;
 pub mod opencode_go;
@@ -54,6 +55,7 @@ mod tests {
             Provider::Muse,
             Provider::Cursor,
             Provider::OpenCodeGo,
+            Provider::Kilo,
         ] {
             let mut cached = ProviderSnapshot::new(provider, vec![], 100);
             assert!(!cached.usable_for_account(Some("new"), Some(1)));

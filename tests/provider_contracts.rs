@@ -1,6 +1,6 @@
 use herdr_agent_quota::model::{BillingTarget, ResetAt, WindowKind};
 use herdr_agent_quota::presentation::MetadataTokens;
-use herdr_agent_quota::providers::{agy, claude, codex, cursor, devin, grok, muse, omp};
+use herdr_agent_quota::providers::{agy, claude, codex, cursor, devin, grok, kilo, muse, omp};
 use serde_json::Value;
 
 fn fixture(value: &str) -> Value {
@@ -255,4 +255,44 @@ fn muse_fixture_maps_the_session_window_to_5h_and_weekly_to_7d() {
         weekly.resets_at.map(|reset| reset.unix_seconds()),
         Some(1_789_344_000)
     );
+}
+
+/// Recorded from a live `GET https://api.kilo.ai/api/trpc/kiloPass.getState`
+/// for a signed-in account with no Kilo Pass: HTTP 200, and a null
+/// subscription. This is the case that must degrade rather than read as a full
+/// allowance.
+#[test]
+fn kilo_reports_nothing_for_an_account_without_a_plan() {
+    let value = fixture(include_str!("fixtures/kilo/pass-state-no-plan.json"));
+    assert!(kilo::parse_pass_state(&value, 1).is_err());
+}
+
+/// The Kilo Pass shape: `currentPeriodUsageUsd` of the period's credits, with
+/// the bonus credits granted into the same period added to the allowance. Kilo
+/// publishes no 5h or 7d bucket for the Kilo Gateway, so a monthly window is
+/// the whole contract — the sidebar tokens for 5h and 7d must stay empty
+/// rather than borrow the monthly number.
+#[test]
+fn kilo_fixture_reports_one_monthly_credit_window() {
+    let value = fixture(include_str!("fixtures/kilo/pass-state-subscribed.json"));
+    let snapshot = kilo::parse_pass_state(&value, 1).expect("snapshot");
+    assert_eq!(snapshot.windows.len(), 1);
+
+    let monthly = snapshot.window(WindowKind::Monthly).expect("30d window");
+    // 6.18 of 30.00 — 20 base credits plus the 10 bonus credits.
+    assert!((monthly.used_percent - 20.6).abs() < 1e-9);
+    assert!((monthly.remaining_percent - 79.4).abs() < 1e-9);
+    assert_eq!(monthly.display_label(), "30d");
+    assert_eq!(
+        monthly.resets_at,
+        ResetAt::parse("2026-10-11T10:09:35.000Z")
+    );
+
+    assert!(snapshot.window(WindowKind::FiveHour).is_none());
+    assert!(snapshot.window(WindowKind::Weekly).is_none());
+
+    let tokens = MetadataTokens::from_snapshot(&snapshot, 1_788_720_000);
+    assert_eq!(tokens.quota_5h, "");
+    assert_eq!(tokens.quota_week, "");
+    assert!(tokens.quota_month.starts_with("30d "), "{tokens:?}");
 }

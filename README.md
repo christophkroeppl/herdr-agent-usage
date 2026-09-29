@@ -112,7 +112,8 @@ Rules:
    opencode (opencode, ~/.config/opencode), pi (pi, ~/.pi/agent),
    omp (omp, ~/.omp), devin (devin, ~/.local/share/devin),
    muse (muse or muse-code, ~/.config/muse),
-   cursor (cursor or cursor-agent, ~/.cursor).
+   cursor (cursor or cursor-agent, ~/.cursor),
+   kilo (kilo, ~/.local/share/kilo).
    Print the list. If none, install all and say so.
 
 3. From the repo: git pull --ff-only if this is main and clean; then
@@ -124,7 +125,7 @@ Rules:
    - Wait for configure/refresh logs to succeed (invoke returns while running).
    - herdr integration status; for each detected agent that is "not installed",
      herdr integration install <id> (claude, codex, grok, opencode, pi, omp,
-     devin, cursor — not agy or muse). Skip CLIs the user does not have.
+     devin, cursor, kilo — not agy or muse). Skip CLIs the user does not have.
    - Font: configure copies Herdr Agent Icons Max to ~/Library/Fonts (macOS) or
      ~/.local/share/fonts (Linux) and maps Ghostty/kitty only if those configs
      already exist. Linux: fc-cache that fonts dir. Detect THIS terminal
@@ -174,7 +175,7 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Fields | Provider, topic, model, context, short/long/monthly quota on by default; cache and TTL optional |
 | Agent order | Group by Space, least quota left first (default); or Herdr's own policy |
 | Low quota alert | Off or a threshold from 1% to 100% |
-| Agents | Claude, Codex, Grok, Agy, OpenCode, Pi, OMP, Devin, Muse, Cursor |
+| Agents | Claude, Codex, Grok, Agy, OpenCode, Pi, OMP, Devin, Muse, Cursor, Kilo |
 
 Use arrows or Space to edit, `a` to apply, and `q` to close.
 Installer options are also available through `./install.sh --help`.
@@ -207,10 +208,18 @@ normal quota percentage instead of guessing.
 | OpenCode | OpenCode console Go meters; per-key usage endpoint as fallback | Console login stored by OpenCode (its `credential` table); fallback is the Go API key |
 | Pi | Canonical Codex quota | Only when the recorded account matches |
 | OMP | `omp usage --json --provider <id>` | Reported account matching the session's credential pin |
+| Kilo Code | Kilo Pass account state (`kiloPass.getState`); 30d | The OAuth gateway login in Kilo's `auth.json`, and only for a session whose backend is the Kilo Gateway; context from that session's messages and Kilo's model catalog |
 
 An OpenCode pane that has not started a session yet shows the account's Go
 meters when a console login exists; the first resolved session replaces them
 with that pane's own backend, or clears them when it is not Go.
+
+Kilo publishes no 5h or 7d bucket for the Kilo Gateway: its allowance is the
+monthly credit total, so a Kilo pane shows `30d` and nothing else. An account
+without a Kilo Pass plan pays from a shared credit balance instead, and that
+balance arrives with no limit attached — there is no honest percentage to
+print, so those panes show no quota rather than a number this plugin cannot
+source.
 
 The Claude Code status line always keeps the user's own statusLine output.
 With **StatusLine pace** enabled (it stays on by default for compatibility), the wrapper appends a

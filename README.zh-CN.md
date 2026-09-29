@@ -98,7 +98,8 @@ docs/agent-setup.zh-CN.md（中文）或 docs/agent-setup.md（英文）执行�
    opencode（opencode，~/.config/opencode）、pi（pi，~/.pi/agent）、
    omp（omp，~/.omp）、devin（devin，~/.local/share/devin）、
    muse（muse 或 muse-code，~/.config/muse）、
-   cursor（cursor 或 cursor-agent，~/.cursor）。
+   cursor（cursor 或 cursor-agent，~/.cursor）、
+   kilo（kilo，~/.local/share/kilo）。
    先打印探测结果。一个都没有就装 all，并说明。
 
 3. 在仓库里：若是干净的 main 先 git pull --ff-only，然后
@@ -110,7 +111,7 @@ docs/agent-setup.zh-CN.md（中文）或 docs/agent-setup.md（英文）执行�
    - 等到 configure/refresh 日志 succeeded（invoke 会在 running 时就返回）。
    - herdr integration status；已探测到且为 not installed 的，执行
      herdr integration install <id>（claude、codex、grok、opencode、pi、omp、
-     devin、cursor；agy 和 muse 不需要）。用户没有的 CLI 不要装。
+     devin、cursor、kilo；agy 和 muse 不需要）。用户没有的 CLI 不要装。
    - 字体：configure 会把 Herdr Agent Icons Max 拷到 ~/Library/Fonts（macOS）
      或 ~/.local/share/fonts（Linux），且仅当 Ghostty/kitty 配置已存在时写入
      映射。Linux 对该字体目录跑 fc-cache。判断当前终端（TERM_PROGRAM /
@@ -160,7 +161,7 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Fields | 默认开启提供方、主题、模型、上下文、短期／长期／月度额度；cache 与 TTL 可选 |
 | Agent order | 按 Space 分组，组内剩余额度最少优先（默认）；或使用 Herdr 自己的排序 |
 | Low quota alert | 关闭，或设置 1%–100% 的提醒阈值 |
-| Agents | Claude、Codex、Grok、Agy、OpenCode、Pi、OMP、Devin、Muse、Cursor |
+| Agents | Claude、Codex、Grok、Agy、OpenCode、Pi、OMP、Devin、Muse、Cursor、Kilo |
 
 方向键或空格修改，`a` 应用，`q` 关闭。脚本配置选项见 `./install.sh --help`。
 Claude 状态栏节奏是独立开关，默认开启以保持升级前行为；可用 `./install.sh --statusline-pace off` 关闭，关闭时仍会正常采集额度观测并供侧栏使用。
@@ -179,6 +180,7 @@ Claude 状态栏节奏是独立开关，默认开启以保持升级前行为；�
 | OpenCode | OpenCode Go usage 接口 | Go 凭据；确认的 PAYG 路由不显示订阅额度 |
 | Pi | 规范 Codex collector 的额度 | 仅在记录的账号一致时复用 |
 | OMP | `omp usage --json --provider <id>` | usage 账号与会话 credential pin 一致 |
+| Kilo Code | Kilo Pass 账号状态（`kiloPass.getState`）；30d | Kilo `auth.json` 里的 OAuth 网关登录，且只对后端为 Kilo Gateway 的会话生效；上下文取自该会话的消息与 Kilo 的模型目录 |
 
 Claude Code 状态栏始终保留用户自己的 statusLine 输出。**StatusLine pace** 默认开启以保持现有行为；
 关闭后不再追加节奏。开启时会在末尾追加当前生效额度窗口的消耗节奏，例如 `⏱ 5h ↓12%`：
