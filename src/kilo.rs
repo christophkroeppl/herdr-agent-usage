@@ -2,9 +2,10 @@
 //!
 //! Kilo is an OpenCode fork, so its on-disk shapes are the same ones the
 //! OpenCode reader handles: `auth.json` holds one entry per provider id, and
-//! `kilo.db` keeps `session`/`message` plus the `session_v2`/`session_message`
-//! pair newer sessions move to. The paths are Kilo's own — it never reads
-//! OpenCode's store, and a machine with both installed keeps them apart.
+//! `kilo.db` keeps `session`, `message` and `part`. The paths are Kilo's own —
+//! it never reads OpenCode's store, and a machine with both installed keeps them
+//! apart. (`session_message` and `session_input` exist in 7.8.1 but are empty,
+//! so nothing reads them; `session_v2` does not exist at all.)
 //!
 //! What Kilo does **not** have locally is quota. Its allowance lives behind
 //! `providers::kilo`, which authenticates with the gateway login read here.
@@ -18,15 +19,14 @@ use std::path::{Path, PathBuf};
 
 /// Exact session-id lookup. Never a full-table scan.
 const SESSION_BY_ID: &str = "SELECT id FROM session WHERE id = ?1 LIMIT 1";
-/// Bounded same-session provider/model/token lookup. Not a spend scan.
+/// Bounded same-session provider/model lookup, newest first.
 const MESSAGE_DATA_FOR_SESSION: &str =
     "SELECT data FROM message WHERE session_id = ?1 ORDER BY time_created DESC LIMIT 8";
-/// Kilo keeps new sessions in `session_v2` instead of `session`.
-const SESSION_BY_ID_V2: &str = "SELECT id FROM session_v2 WHERE id = ?1 LIMIT 1";
-/// The same bounded lookup against the v2 message table, which orders by the
-/// session-unique `seq` and carries the role in `type` instead of the payload.
-const MESSAGE_DATA_FOR_SESSION_V2: &str =
-    "SELECT type, data FROM session_message WHERE session_id = ?1 ORDER BY seq DESC LIMIT 8";
+/// Bounded same-session context lookup. `step-finish` is the row Kilo itself
+/// reads for its own Token Usage panel, and the one its partial index is built
+/// for; its token counters are the prompt-cache occupancy of one model step.
+/// Not a spend scan.
+const STEP_DATA_FOR_SESSION: &str = "SELECT data FROM part WHERE session_id = ?1      AND json_extract(data, '$.type') = 'step-finish'    ORDER BY time_created DESC LIMIT 24";
 /// A table this layout needs. Absent means the layout is not in use, not that
 /// the store is unreadable.
 const TABLE_BY_NAME: &str =
@@ -35,32 +35,23 @@ const MAX_MODELS_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One on-disk layout of Kilo's session store.
 ///
-/// Kilo kept OpenCode's migration shape: `session`/`message` for sessions that
-/// predate the v2 tables, `session_v2`/`session_message` for everything newer,
-/// with the role moved out of the JSON payload into `type`.
+/// Kilo 7.8.1 keeps one session table. Probing for a second layout would be a
+/// guess about a future release, and a probe that names a table which does not
+/// exist is worse than no probe: it looks like support that is not there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionSchema {
     sessions_table: &'static str,
     by_id: &'static str,
     messages: &'static str,
-    role_in_column: bool,
+    steps: &'static str,
 }
 
-/// Probed in order: a migrated session keeps the evidence it already had.
-const SESSION_SCHEMAS: [SessionSchema; 2] = [
-    SessionSchema {
-        sessions_table: "session",
-        by_id: SESSION_BY_ID,
-        messages: MESSAGE_DATA_FOR_SESSION,
-        role_in_column: false,
-    },
-    SessionSchema {
-        sessions_table: "session_v2",
-        by_id: SESSION_BY_ID_V2,
-        messages: MESSAGE_DATA_FOR_SESSION_V2,
-        role_in_column: true,
-    },
-];
+const SESSION_SCHEMA: SessionSchema = SessionSchema {
+    sessions_table: "session",
+    by_id: SESSION_BY_ID,
+    messages: MESSAGE_DATA_FOR_SESSION,
+    steps: STEP_DATA_FOR_SESSION,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
@@ -261,30 +252,34 @@ pub fn lookup_session(paths: &KiloPaths, session_id: &str) -> SessionLookup {
     }
 }
 
-/// Reads the session from whichever store layout holds it. A layout whose
-/// tables are absent is skipped: an older store has no v2 tables, and a
-/// freshly upgraded one has no v2 rows for its older sessions.
+/// Reads the session's backend, model and context.
+///
+/// Context comes from the newest `step-finish` part, which is the row Kilo
+/// itself reads for its own Token Usage panel. A message's own counters are
+/// not the answer: they mix in output and reasoning tokens, which the next
+/// request has already absorbed, so summing them would overstate the window
+/// that is actually occupied. `tokens.total` is not a shortcut either — Kilo
+/// computes it as input+output on 7291 of 9475 step rows and as
+/// input+output+reasoning on the other 2185, so it means different things in
+/// different versions.
 fn read_session_evidence(
     connection: &Connection,
     session_id: &str,
 ) -> rusqlite::Result<Option<SessionEvidence>> {
-    for schema in SESSION_SCHEMAS {
-        if !table_exists(connection, schema.sessions_table)? {
-            continue;
-        }
-        if !session_exists(connection, session_id, &schema)? {
-            continue;
-        }
-        let (provider_id, model_id, context_tokens) =
-            session_evidence(connection, session_id, &schema)?;
-        return Ok(Some(SessionEvidence {
-            session_id: session_id.to_string(),
-            provider_id,
-            model_id,
-            context_tokens,
-        }));
+    if !table_exists(connection, SESSION_SCHEMA.sessions_table)? {
+        return Ok(None);
     }
-    Ok(None)
+    if !session_exists(connection, session_id)? {
+        return Ok(None);
+    }
+    let (provider_id, model_id) = session_identity(connection, session_id)?;
+    let context_tokens = session_context(connection, session_id)?;
+    Ok(Some(SessionEvidence {
+        session_id: session_id.to_string(),
+        provider_id,
+        model_id,
+        context_tokens,
+    }))
 }
 
 fn table_exists(connection: &Connection, name: &str) -> rusqlite::Result<bool> {
@@ -297,49 +292,51 @@ fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
-fn session_exists(
-    connection: &Connection,
-    session_id: &str,
-    schema: &SessionSchema,
-) -> rusqlite::Result<bool> {
-    let mut statement = connection.prepare(schema.by_id)?;
+fn session_exists(connection: &Connection, session_id: &str) -> rusqlite::Result<bool> {
+    let mut statement = connection.prepare(SESSION_SCHEMA.by_id)?;
     let mut rows = statement.query([session_id])?;
     Ok(rows.next()?.is_some())
 }
 
-fn session_evidence(
+/// The backend and model the session was served by, from its newest assistant
+/// message. Only 88 of Kilo's step rows carry their own model block, so the
+/// message is where the identity normally comes from.
+fn session_identity(
     connection: &Connection,
     session_id: &str,
-    schema: &SessionSchema,
-) -> rusqlite::Result<(Option<String>, Option<String>, Option<u64>)> {
-    let mut statement = connection.prepare(schema.messages)?;
+) -> rusqlite::Result<(Option<String>, Option<String>)> {
+    let mut statement = connection.prepare(SESSION_SCHEMA.messages)?;
     let mut rows = statement.query([session_id])?;
-    let mut identity = None;
     while let Some(row) = rows.next()? {
-        let role = schema
-            .role_in_column
-            .then(|| row.get::<_, String>(0))
-            .transpose()?;
-        let data: String = row.get(usize::from(schema.role_in_column))?;
+        let data: String = row.get(0)?;
         let Ok(value) = serde_json::from_str::<Value>(&data) else {
             continue;
         };
-        let message_identity = provider_from_message(&value);
-        if identity.is_none() {
-            identity.clone_from(&message_identity);
-        }
-        if let (Some((provider_id, model_id)), Some(context_tokens)) = (
-            message_identity,
-            context_tokens_from_message(&value, role.as_deref()),
-        ) {
-            if identity.as_ref() == Some(&(provider_id, model_id)) {
-                let (provider_id, model_id) = identity.unwrap();
-                return Ok((Some(provider_id), model_id, Some(context_tokens)));
-            }
+        if let Some((provider_id, model_id)) = provider_from_message(&value) {
+            return Ok((Some(provider_id), model_id));
         }
     }
-    let (provider_id, model_id) = identity.unzip();
-    Ok((provider_id, model_id.flatten(), None))
+    Ok((None, None))
+}
+
+/// The prompt-cache occupancy of the session's latest completed model step.
+///
+/// A step with every counter at zero is a free-model step; it yields no usage,
+/// because reading it as a 0-token context would present as an untouched
+/// window.
+fn session_context(connection: &Connection, session_id: &str) -> rusqlite::Result<Option<u64>> {
+    let mut statement = connection.prepare(SESSION_SCHEMA.steps)?;
+    let mut rows = statement.query([session_id])?;
+    while let Some(row) = rows.next()? {
+        let data: String = row.get(0)?;
+        let Ok(value) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        if let Some(tokens) = context_tokens_from_step(&value) {
+            return Ok(Some(tokens));
+        }
+    }
+    Ok(None)
 }
 
 fn provider_from_message(value: &Value) -> Option<(String, Option<String>)> {
@@ -363,24 +360,24 @@ fn provider_from_message(value: &Value) -> Option<(String, Option<String>)> {
     Some((provider_id, model_id))
 }
 
-fn context_tokens_from_message(value: &Value, column_role: Option<&str>) -> Option<u64> {
-    let role = value.get("role").and_then(Value::as_str).or(column_role);
-    if role != Some("assistant") {
+/// Context occupancy of one `step-finish` part: the tokens that occupy the
+/// prompt cache for the next request.
+///
+/// Output and reasoning are excluded on purpose: Kilo folds them into the next
+/// step's input, so counting them here would count the same tokens twice and
+/// overstate the window.
+fn context_tokens_from_step(value: &Value) -> Option<u64> {
+    if value.get("type").and_then(Value::as_str) != Some("step-finish") {
         return None;
     }
     let tokens = value.get("tokens")?;
-    let output = token(tokens, "output");
-    if output == 0 {
-        return None;
-    }
     let cache = tokens.get("cache").unwrap_or(&Value::Null);
-    Some(
-        token(tokens, "input")
-            .saturating_add(output)
-            .saturating_add(token(tokens, "reasoning"))
-            .saturating_add(token(cache, "read"))
-            .saturating_add(token(cache, "write")),
-    )
+    let occupied = token(tokens, "input")
+        .saturating_add(token(cache, "read"))
+        .saturating_add(token(cache, "write"));
+    // A free-model step records every counter at zero. Reporting a 0-token
+    // context would present as an untouched window.
+    (occupied > 0).then_some(occupied)
 }
 
 fn token(value: &Value, name: &str) -> u64 {
@@ -468,8 +465,15 @@ pub fn classify_kilo(
     }
 }
 
+/// Seeds a Kilo session store with the rows this reader actually uses:
+/// assistant messages for the backend and model, and `step-finish` parts for
+/// context. That is the live 7.8.1 layout — `session`, `message`, `part`.
 #[cfg(test)]
-pub(crate) fn write_fixture_db(path: &Path, rows: &[(&str, &str)]) -> rusqlite::Result<()> {
+pub(crate) fn write_fixture_db(
+    path: &Path,
+    messages: &[(&str, &str)],
+    parts: &[(&str, &str)],
+) -> rusqlite::Result<()> {
     let connection = Connection::open(path)?;
     connection.execute_batch(
         "CREATE TABLE session (
@@ -488,12 +492,21 @@ pub(crate) fn write_fixture_db(path: &Path, rows: &[(&str, &str)]) -> rusqlite::
             time_created INTEGER NOT NULL,
             time_updated INTEGER NOT NULL,
             data TEXT NOT NULL
-        );",
+        );
+        CREATE TABLE part (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE INDEX part_session_step_finish_idx ON part (session_id)
+            WHERE json_valid(part.data) AND json_extract(part.data, '$.type') = 'step-finish';",
     )?;
-    for (index, (session_id, data)) in rows.iter().enumerate() {
+    for (index, (session_id, data)) in messages.iter().enumerate() {
         connection.execute(
-            "INSERT INTO session (id) VALUES (?1)
-             ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO session (id) VALUES (?1) ON CONFLICT(id) DO NOTHING",
             [*session_id],
         )?;
         connection.execute(
@@ -502,54 +515,11 @@ pub(crate) fn write_fixture_db(path: &Path, rows: &[(&str, &str)]) -> rusqlite::
             rusqlite::params![format!("msg_{index}"), *session_id, index as i64 + 1, *data],
         )?;
     }
-    Ok(())
-}
-
-/// Kilo's v2 store layout. The role is a column there, so each row is
-/// `(session id, type, data)`.
-#[cfg(test)]
-pub(crate) fn write_v2_fixture_db(
-    path: &Path,
-    rows: &[(&str, &str, &str)],
-) -> rusqlite::Result<()> {
-    let connection = Connection::open(path)?;
-    connection.execute_batch(
-        "CREATE TABLE session_v2 (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL DEFAULT 'proj',
-            slug TEXT NOT NULL DEFAULT 's',
-            directory TEXT NOT NULL DEFAULT '',
-            title TEXT NOT NULL DEFAULT 't',
-            version TEXT NOT NULL DEFAULT '2',
-            time_created INTEGER NOT NULL DEFAULT 1,
-            time_updated INTEGER NOT NULL DEFAULT 1
-        );
-        CREATE TABLE session_message (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            type TEXT NOT NULL,
-            seq INTEGER,
-            time_created INTEGER NOT NULL,
-            time_updated INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );",
-    )?;
-    for (index, (session_id, kind, data)) in rows.iter().enumerate() {
+    for (index, (session_id, data)) in parts.iter().enumerate() {
         connection.execute(
-            "INSERT INTO session_v2 (id) VALUES (?1)
-             ON CONFLICT(id) DO NOTHING",
-            [*session_id],
-        )?;
-        connection.execute(
-            "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
-             VALUES (?1, ?2, ?3, ?4, ?4, ?4, ?5)",
-            rusqlite::params![
-                format!("msg_{index}"),
-                *session_id,
-                *kind,
-                index as i64 + 1,
-                *data
-            ],
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+             VALUES (?1, 'msg_0', ?2, ?3, ?3, ?4)",
+            rusqlite::params![format!("prt_{index}"), *session_id, index as i64 + 1, *data],
         )?;
     }
     Ok(())
@@ -630,6 +600,10 @@ mod tests {
                 "ses_kilo",
                 r#"{"role":"assistant","providerID":"kilo","modelID":"stealth/space-bunny-alpha"}"#,
             )],
+            &[(
+                "ses_kilo",
+                r#"{"type":"step-finish","tokens":{"input":100,"output":10,"cache":{"read":20,"write":30}}}"#,
+            )],
         )
         .unwrap();
         let paths = KiloPaths::from_dir(directory.path());
@@ -649,6 +623,10 @@ mod tests {
         write_fixture_db(
             &db,
             &[("ses_kilo", r#"{"role":"assistant","providerID":"kilo"}"#)],
+            &[(
+                "ses_kilo",
+                r#"{"type":"step-finish","tokens":{"input":100,"output":10,"cache":{"read":20,"write":30}}}"#,
+            )],
         )
         .unwrap();
         let paths = KiloPaths::from_dir(directory.path());
@@ -704,6 +682,7 @@ mod tests {
                 "ses_or",
                 r#"{"role":"assistant","providerID":"openrouter","modelID":"some/model"}"#,
             )],
+            &[],
         )
         .unwrap();
         let paths = KiloPaths::from_dir(directory.path());
@@ -723,6 +702,7 @@ mod tests {
                 "ses_x",
                 r#"{"role":"assistant","providerID":"some-fresh-backend"}"#,
             )],
+            &[],
         )
         .unwrap();
         let paths = KiloPaths::from_dir(directory.path());
@@ -737,7 +717,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let paths = KiloPaths::from_dir(directory.path());
         fs::write(&paths.auth, GATEWAY_LOGIN).unwrap();
-        write_fixture_db(&paths.db, &[]).unwrap();
+        write_fixture_db(&paths.db, &[], &[]).unwrap();
         let auth = read_auth(&paths).unwrap();
         assert_eq!(
             classify_kilo(lookup_session(&paths, "ses_absent"), Ok(&auth)),
@@ -756,141 +736,70 @@ mod tests {
     }
 
     #[test]
-    fn the_latest_completed_assistant_message_carries_the_context() {
-        let directory = tempdir().unwrap();
-        let paths = KiloPaths::from_dir(directory.path());
-        write_fixture_db(
-            &paths.db,
-            &[
-                (
-                    "ses_context",
-                    r#"{"role":"assistant","providerID":"kilo","modelID":"space-bunny","tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":20,"write":30}}}"#,
-                ),
-                (
-                    "ses_context",
-                    r#"{"role":"assistant","providerID":"kilo","modelID":"space-bunny","tokens":{"input":999,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}"#,
-                ),
-            ],
-        )
-        .unwrap();
-        match lookup_session(&paths, "ses_context") {
-            SessionLookup::Found(session) => {
-                assert_eq!(session.provider_id.as_deref(), Some("kilo"));
-                assert_eq!(session.model_id.as_deref(), Some("space-bunny"));
-                assert_eq!(session.context_tokens, Some(165));
-            }
-            other => panic!("expected found session, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_v2_session_reads_the_role_column_and_the_model_object() {
-        let directory = tempdir().unwrap();
-        let paths = KiloPaths::from_dir(directory.path());
-        write_v2_fixture_db(
-            &paths.db,
-            &[
-                (
-                    "ses_v2",
-                    "user",
-                    r#"{"model":{"id":"space-bunny","providerID":"kilo"}}"#,
-                ),
-                (
-                    "ses_v2",
-                    "assistant",
-                    r#"{"model":{"id":"space-bunny","providerID":"kilo"},"tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":20,"write":30}}}"#,
-                ),
-            ],
-        )
-        .unwrap();
-        match lookup_session(&paths, "ses_v2") {
-            SessionLookup::Found(session) => {
-                assert_eq!(session.provider_id.as_deref(), Some("kilo"));
-                assert_eq!(session.context_tokens, Some(165));
-            }
-            other => panic!("expected found session, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_migrated_session_keeps_the_evidence_it_already_had() {
+    fn context_comes_from_the_latest_step_not_the_message_sum() {
         let directory = tempdir().unwrap();
         let paths = KiloPaths::from_dir(directory.path());
         write_fixture_db(
             &paths.db,
             &[(
-                "ses_both",
-                r#"{"role":"assistant","providerID":"openrouter"}"#,
+                "ses_step",
+                r#"{"role":"assistant","providerID":"kilo","modelID":"space-bunny","tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":20,"write":30}}}"#,
             )],
-        )
-        .unwrap();
-        write_v2_fixture_db(
-            &paths.db,
             &[(
-                "ses_both",
-                "assistant",
-                r#"{"model":{"id":"x","providerID":"kilo"}}"#,
+                "ses_step",
+                r#"{"type":"step-finish","tokens":{"total":0,"input":100,"output":10,"reasoning":5,"cache":{"read":20,"write":30}}}"#,
             )],
         )
         .unwrap();
-        match lookup_session(&paths, "ses_both") {
+        match lookup_session(&paths, "ses_step") {
             SessionLookup::Found(session) => {
-                assert_eq!(session.provider_id.as_deref(), Some("openrouter"));
+                assert_eq!(session.provider_id.as_deref(), Some("kilo"));
+                // input + cache.read + cache.write = 150, not the message sum 165.
+                assert_eq!(session.context_tokens, Some(150));
             }
             other => panic!("expected found session, got {other:?}"),
         }
     }
 
+    /// A free-model step records every counter at zero. Reading it as a 0-token
+    /// context would present as an untouched window.
     #[test]
-    fn model_context_lookup_is_exact_and_bounded() {
+    fn a_free_model_step_yields_no_context() {
         let directory = tempdir().unwrap();
         let paths = KiloPaths::from_dir(directory.path());
-        fs::write(
-            &paths.models,
-            br#"{"kilo":{"models":{"space-bunny":{"limit":{"context":1000000}}}},"other":{"models":{"space-bunny":{"limit":{"context":1}}}}}"#,
+        write_fixture_db(
+            &paths.db,
+            &[(
+                "ses_free",
+                r#"{"role":"assistant","providerID":"kilo","modelID":"space-bunny"}"#,
+            )],
+            &[(
+                "ses_free",
+                r#"{"type":"step-finish","tokens":{"total":0,"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0}"#,
+            )],
         )
         .unwrap();
-        assert_eq!(
-            model_context_window(&paths, "kilo", "space-bunny"),
-            Some(1_000_000)
-        );
-        assert_eq!(model_context_window(&paths, "kilo", "missing"), None);
-        assert_eq!(
-            model_context_window(&paths, "other", "space-bunny"),
-            Some(1)
-        );
-
-        fs::write(&paths.models, vec![b' '; MAX_MODELS_BYTES as usize + 1]).unwrap();
-        assert_eq!(model_context_window(&paths, "kilo", "space-bunny"), None);
-    }
-
-    #[test]
-    fn the_auth_map_records_kind_without_keeping_secrets() {
-        let auth = parse_auth_json(GATEWAY_LOGIN).unwrap();
-        assert_eq!(auth.get("kilo"), Some(CredentialKind::Oauth));
-        assert_eq!(
-            auth.get("openrouter"),
-            Some(CredentialKind::Api { has_secret: true })
-        );
-        assert!(!format!("{auth:?}").contains("or_secret"));
-        assert_eq!(auth.get("absent"), None);
-    }
-
-    #[test]
-    fn malformed_auth_is_an_error() {
-        assert!(parse_auth_json(b"{not json").is_err());
-        assert!(parse_auth_json(b"[1]").is_err());
+        match lookup_session(&paths, "ses_free") {
+            SessionLookup::Found(session) => {
+                assert_eq!(session.provider_id.as_deref(), Some("kilo"));
+                assert_eq!(session.context_tokens, None);
+            }
+            other => panic!("expected found session, got {other:?}"),
+        }
     }
 
     #[test]
     fn queries_are_exact_session_lookups() {
         assert!(SESSION_BY_ID.contains("WHERE id = ?1"));
         assert!(MESSAGE_DATA_FOR_SESSION.contains("WHERE session_id = ?1"));
-        assert!(MESSAGE_DATA_FOR_SESSION.contains("LIMIT 8"));
+        assert!(MESSAGE_DATA_FOR_SESSION.contains("LIMIT"));
         assert!(!MESSAGE_DATA_FOR_SESSION.contains("SUM("));
-        assert!(MESSAGE_DATA_FOR_SESSION_V2.contains("WHERE session_id = ?1"));
-        assert!(MESSAGE_DATA_FOR_SESSION_V2.contains("LIMIT 8"));
-        assert!(!MESSAGE_DATA_FOR_SESSION_V2.contains("SUM("));
+        // Context reads the newest step row, not the newest message, and never
+        // aggregates the whole session.
+        assert!(STEP_DATA_FOR_SESSION.contains("WHERE session_id = ?1"));
+        assert!(STEP_DATA_FOR_SESSION.contains("step-finish"));
+        assert!(STEP_DATA_FOR_SESSION.contains("LIMIT"));
+        assert!(!STEP_DATA_FOR_SESSION.contains("SUM("));
     }
 
     /// A whole Kilo store for one account: its login and one gateway session.
@@ -903,6 +812,10 @@ mod tests {
             &[(
                 session_id,
                 r#"{"role":"assistant","providerID":"kilo","modelID":"space-bunny"}"#,
+            )],
+            &[(
+                session_id,
+                r#"{"type":"step-finish","tokens":{"input":100,"output":10,"cache":{"read":20,"write":30}}}"#,
             )],
         )
         .unwrap();

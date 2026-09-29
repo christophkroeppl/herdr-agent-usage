@@ -2093,11 +2093,18 @@ mod tests {
             &[
                 (
                     "ses_gateway",
-                    r#"{"role":"assistant","providerID":"kilo","modelID":"space-bunny","tokens":{"input":1000,"output":10,"reasoning":0,"cache":{"read":900,"write":90}}}"#,
+                    r#"{"role":"assistant","providerID":"kilo","modelID":"space-bunny"}"#,
                 ),
                 (
                     "ses_router",
                     r#"{"role":"assistant","providerID":"openrouter","modelID":"some/model"}"#,
+                ),
+            ],
+            // 1000 + 900 + 90 = 1990 of a 1,000,000-token window.
+            &[
+                (
+                    "ses_gateway",
+                    r#"{"type":"step-finish","tokens":{"input":1000,"output":10,"reasoning":0,"cache":{"read":900,"write":90}}}"#,
                 ),
             ],
         )
@@ -2128,7 +2135,7 @@ mod tests {
         assert_eq!(identity.provider, "Kilo");
         assert_eq!(identity.model, "space-bunny");
         let context = gateway.context.expect("context");
-        assert!((context.used_percent - 0.2).abs() < 1e-9, "{context:?}");
+        assert!((context.used_percent - 0.199).abs() < 1e-6, "{context:?}");
 
         // A Kilo pane running on another backend owns no Kilo allowance.
         assert_eq!(router.resolution, Resolution::NoSubscription);

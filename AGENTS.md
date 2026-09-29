@@ -264,10 +264,12 @@ credit total, so `src/providers/kilo.rs` produces exactly one
 
 Three sources, all read-only, in order of authority:
 
-1. **Session evidence** — `~/.local/share/kilo/kilo.db`, opened read-only, the
-   same bounded `message`/`session_message` tail the OpenCode reader uses (Kilo
-   is an OpenCode fork and kept the v1/v2 table pair). It names the backend, the
-   model, and the latest completed assistant turn's tokens for context.
+1. **Session evidence** — `~/.local/share/kilo/kilo.db`, opened read-only. Two
+   bounded per-session reads: the newest assistant `message` row names the
+   backend and model, and the newest `step-finish` `part` row gives the context.
+   The step is the row Kilo's own Token Usage panel reads, and the one its
+   partial index is built for. `session_message` and `session_input` exist in
+   7.8.1 but are empty; `session_v2` does not exist, so nothing probes for it.
 2. **Context window** — `~/.cache/kilo/models.json`,
    `kilo.models[model].limit.context`, same exact lookup as OpenCode's catalog.
 3. **Quota** — `GET https://api.kilo.ai/api/trpc/kiloPass.getState`, the tRPC
@@ -302,6 +304,13 @@ The allowance is `currentPeriodBaseCreditsUsd` plus
 and expire with it, so they are allowance rather than a top-up outside the
 window. Both halves of the ratio are required — a missing spend would read as
 an untouched period, which presents as a full allowance.
+
+Context is `input + cache.read + cache.write` on the step row. Output and
+reasoning are excluded on purpose: Kilo folds them into the next request's
+input, so counting them double-counts the window. `tokens.total` is not a
+shortcut — Kilo computes it as input+output on 7291 of 9475 step rows and as
+input+output+reasoning on the other 2185, so it means different things in
+different versions.
 
 ## Herdr state this plugin owns outside a pane
 
