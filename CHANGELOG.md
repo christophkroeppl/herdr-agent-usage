@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Kilo Code.** A Kilo pane gets a sidebar row like any other agent: the
+  context its session occupies, and the account's Kilo Pass allowance.
+  Kilo publishes no 5h or 7h bucket for the Kilo Gateway — its subscription is
+  a monthly credit total — so the row shows `30d` and nothing shorter, and the
+  short windows stay empty rather than borrow the monthly number. Kilo publishes
+  no rate limit at all, so none is shown either.
+
+  The allowance comes from the account's own Kilo Pass state, authenticated
+  with the gateway login in `auth.json`, and the context from that session's
+  latest completed step. Attribution is by the login rather than the harness:
+  Kilo drives other providers from one CLI, so a session on OpenCode Go routes
+  to that account's windows under its own name, and a Kilo Gateway session
+  behind a gateway *API key* is not attributed at all — that key bills the same
+  account but cannot name it.
+
+  An account with no Kilo Pass pays from a shared credit balance, which Kilo
+  reports with no limit attached. Those panes show the balance and no bar: a
+  percentage drawn against a denominator that does not exist would be invented,
+  and the credit pool's own ratio degenerates to a constant 100% on a drained
+  account while reading as "quota exhausted".
+
+
 ### Changed
 
 - A window whose provider label is another spelling of its own period renders

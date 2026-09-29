@@ -1153,9 +1153,14 @@ fn refresh_opencode_go(cache: &CacheStore, target: &BillingTarget, now: u64) {
 /// The Kilo Pass meter, from the gateway login that pays for Kilo Gateway panes.
 ///
 /// One request per debounce window for the one account the store is signed in
-/// as. An account with no plan is not an error: the endpoint answers 200 with a
-/// null subscription, which stays an error here so the pane keeps whatever it
-/// had, and a pane that never had a reading simply shows none.
+/// as.
+///
+/// The two failure kinds are kept apart, because only one of them should clear
+/// the pane. A request that fails — transport, auth, server, or an unreadable
+/// body — leaves the last good snapshot in place, since Kilo never said
+/// anything about the account. A request that succeeds and answers "this
+/// account has no consumable Pass" saves an empty snapshot for that same
+/// account, so a cancelled plan does not leave its `30d` on screen.
 fn refresh_kilo(cache: &CacheStore, target: &BillingTarget, now: u64) {
     let Some(paths) = crate::kilo::KiloPaths::from_env() else {
         return;
@@ -1169,8 +1174,23 @@ fn refresh_kilo(cache: &CacheStore, target: &BillingTarget, now: u64) {
     {
         return;
     }
-    if let Ok(snapshot) = crate::providers::kilo::fetch(&credential) {
-        let _ = cache.save(&snapshot);
+    apply_kilo_outcome(cache, crate::providers::kilo::fetch(&credential));
+}
+
+/// Persist whatever a Kilo Pass fetch produced, and nothing at all when it
+/// failed.
+///
+/// The asymmetry is the point. `Ok` carries a snapshot in both variants of
+/// `PassOutcome`: an allowance with a window, or an empty one that clears a
+/// window this account had. `Err` writes nothing, so a transport, auth or
+/// server failure leaves the last good reading standing rather than blanking a
+/// pane over a blip.
+pub(crate) fn apply_kilo_outcome(
+    cache: &CacheStore,
+    outcome: Result<crate::providers::kilo::PassOutcome>,
+) {
+    if let Ok(outcome) = outcome {
+        let _ = cache.save(&outcome.snapshot());
     }
 }
 

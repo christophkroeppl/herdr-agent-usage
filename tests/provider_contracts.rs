@@ -264,7 +264,12 @@ fn muse_fixture_maps_the_session_window_to_5h_and_weekly_to_7d() {
 #[test]
 fn kilo_reports_nothing_for_an_account_without_a_plan() {
     let value = fixture(include_str!("fixtures/kilo/pass-state-no-plan.json"));
-    assert!(kilo::parse_pass_state(&value, 1).is_err());
+    // Not an error: Kilo answered that this account has nothing to meter, so the
+    // outcome is an empty snapshot that clears whatever the account had.
+    let snapshot = kilo::parse_pass_state(&value, 1)
+        .expect("no Pass is an answer")
+        .snapshot();
+    assert_eq!(snapshot.windows.len(), 0);
 }
 
 /// The Kilo Pass shape: `currentPeriodUsageUsd` of the period's credits, with
@@ -275,7 +280,9 @@ fn kilo_reports_nothing_for_an_account_without_a_plan() {
 #[test]
 fn kilo_fixture_reports_one_monthly_credit_window() {
     let value = fixture(include_str!("fixtures/kilo/pass-state-subscribed.json"));
-    let snapshot = kilo::parse_pass_state(&value, 1).expect("snapshot");
+    let snapshot = kilo::parse_pass_state(&value, 1)
+        .expect("an allowance")
+        .snapshot();
     assert_eq!(snapshot.windows.len(), 1);
 
     let monthly = snapshot.window(WindowKind::Monthly).expect("30d window");
